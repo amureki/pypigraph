@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pypigraph</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #fafafa;
+      color: #1a1a1a;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      padding: 0.4rem 0.75rem;
+      border-bottom: 1px solid #e0e0e0;
+      background: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; white-space: nowrap; }
+    #stats-bar {
+      font-size: 0.7rem;
+      color: #666;
+      display: none;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    #stats-bar.active { display: flex; }
+    #stats-bar .stat b { color: #1a1a1a; }
+    .stat-sep { color: #ccc; }
+
+    #main-area {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    #sidebar {
+      width: 320px;
+      min-width: 280px;
+      background: #fff;
+      border-right: 1px solid #e0e0e0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #sidebar-tabs {
+      display: flex;
+      border-bottom: 1px solid #e0e0e0;
+      flex-shrink: 0;
+    }
+    .sidebar-tab {
+      flex: 1;
+      padding: 0.45rem;
+      text-align: center;
+      cursor: pointer;
+      border: none;
+      background: none;
+      font-size: 0.75rem;
+      color: #666;
+      border-bottom: 2px solid transparent;
+    }
+    .sidebar-tab.active { color: #2563eb; border-bottom-color: #2563eb; font-weight: 500; }
+    .sidebar-tab:hover { background: #f5f5f5; }
+    .tab-panel { display: none; padding: 0.75rem; overflow-y: auto; flex: 1; }
+    .tab-panel.active { display: block; }
+
+    /* Input tab */
+    #toml-input {
+      width: 100%;
+      height: 180px;
+      font-family: "SF Mono", "Fira Code", monospace;
+      font-size: 0.75rem;
+      padding: 0.5rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      resize: vertical;
+    }
+    .input-group { margin-top: 0.5rem; }
+    .input-group label { font-size: 0.7rem; color: #888; display: block; margin-bottom: 0.2rem; }
+    #url-input {
+      width: 100%;
+      padding: 0.35rem 0.5rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.75rem;
+    }
+    .input-controls {
+      margin-top: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .input-controls label { font-size: 0.75rem; color: #555; }
+    #go-btn {
+      flex: 1;
+      padding: 0.4rem 0.75rem;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    #go-btn:hover { background: #1d4ed8; }
+    #go-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+
+    #status {
+      margin-top: 0.5rem;
+      font-size: 0.7rem;
+      color: #555;
+      display: none;
+    }
+    #status.active { display: block; }
+    #error {
+      margin-top: 0.5rem;
+      font-size: 0.75rem;
+      color: #dc2626;
+      display: none;
+    }
+    #error.active { display: block; }
+
+    /* Module tab */
+    .module-empty { color: #999; font-size: 0.8rem; padding: 1rem 0; text-align: center; }
+    .detail-row { padding: 0.35rem 0; border-bottom: 1px solid #f0f0f0; }
+    .detail-label { color: #888; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    .detail-value { margin-top: 0.1rem; word-break: break-word; font-size: 0.8rem; }
+    .detail-value a { color: #2563eb; text-decoration: none; }
+    .detail-value a:hover { text-decoration: underline; }
+    .dep-list { list-style: none; padding: 0; font-size: 0.75rem; }
+    .dep-list li { padding: 0.2rem 0; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.7rem; }
+    .license-ok { color: #16a34a; }
+    .license-warn { color: #d97706; }
+    .license-unknown { color: #dc2626; }
+
+    /* Graph tab */
+    .graph-stats { font-size: 0.8rem; }
+    .graph-stats dt { color: #888; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.03em; margin-top: 0.5rem; }
+    .graph-stats dd { margin: 0.1rem 0 0; }
+    .license-table { width: 100%; font-size: 0.75rem; border-collapse: collapse; margin-top: 0.25rem; }
+    .license-table td { padding: 0.2rem 0.25rem; border-bottom: 1px solid #f0f0f0; }
+    .license-table td:last-child { text-align: right; color: #888; }
+
+    /* Graph area */
+    #graph-container {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+      cursor: grab;
+    }
+    #graph-container:active { cursor: grabbing; }
+    #graph-container svg { position: absolute; transform-origin: 0 0; }
+    #graph-container .node { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>pypigraph</h1>
+    <div id="stats-bar"></div>
+  </header>
+  <div id="main-area">
+    <aside id="sidebar">
+      <div id="sidebar-tabs">
+        <button class="sidebar-tab active" data-tab="input">Input</button>
+        <button class="sidebar-tab" data-tab="graph">Graph</button>
+        <button class="sidebar-tab" data-tab="module">Module</button>
+      </div>
+      <div id="tab-input" class="tab-panel active">
+        <textarea id="toml-input" placeholder="Paste pyproject.toml contents..."></textarea>
+        <div class="input-group">
+          <label>Or fetch from URL</label>
+          <input id="url-input" type="url" placeholder="https://raw.githubusercontent.com/...">
+        </div>
+        <div class="input-controls">
+          <label>Depth <input id="depth-input" type="number" min="1" max="10" value="2" style="width:3rem;padding:0.2rem;border:1px solid #ccc;border-radius:3px;font-size:0.75rem;"></label>
+          <button id="go-btn">Build Graph</button>
+        </div>
+        <div id="status"></div>
+        <div id="error"></div>
+      </div>
+      <div id="tab-graph" class="tab-panel">
+        <p class="module-empty">Build a graph first</p>
+      </div>
+      <div id="tab-module" class="tab-panel">
+        <p class="module-empty">Click a package in the graph</p>
+      </div>
+    </aside>
+    <div id="graph-container"></div>
+  </div>
+
+  <script type="module">
+    import { parse } from "https://cdn.jsdelivr.net/npm/smol-toml@1.3.1/+esm";
+
+    const vizPromise = import("https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/+esm")
+      .then(m => m.instance());
+
+    // --- PEP 508 parsing ---
+    function parsePep508(raw) {
+      const match = raw.match(
+        /^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)(\[([^\]]+)\])?\s*([^;]*?)(\s*;.*)?$/
+      );
+      if (!match) return { name: raw.trim(), extras: [], specifier: "", marker: "", raw };
+      return {
+        name: match[1],
+        extras: match[4] ? match[4].split(",").map(e => e.trim()) : [],
+        specifier: (match[5] || "").trim(),
+        marker: match[6] ? match[6].replace(/^\s*;\s*/, "").trim() : "",
+        raw,
+      };
+    }
+
+    function normalizeName(name) {
+      return name.toLowerCase().replace(/[-_.]+/g, "-");
+    }
+
+    function formatSize(bytes) {
+      if (!bytes || bytes === 0) return "?";
+      if (bytes < 1024) return bytes + " B";
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+      return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    // --- TOML parsing ---
+    function extractDependencies(tomlString) {
+      const doc = parse(tomlString);
+      const deps = doc.project?.dependencies ?? [];
+      if (deps.length === 0) throw new Error("No dependencies found in [project].dependencies");
+      return deps.map(parsePep508);
+    }
+
+    // --- PyPI fetcher ---
+    const cache = new Map();
+
+    async function fetchPackageInfo(name) {
+      const normalized = normalizeName(name);
+      if (cache.has(normalized)) return cache.get(normalized);
+
+      const promise = (async () => {
+        try {
+          const resp = await fetch(`https://pypi.org/pypi/${normalized}/json`);
+          if (!resp.ok) {
+            return { name: normalized, version: "?", summary: "", license: "", size: 0, dependencies: [], error: true };
+          }
+          const data = await resp.json();
+          const info = data.info;
+          const requires = (info.requires_dist ?? [])
+            .map(parsePep508)
+            .filter(d => !d.marker.includes("extra ==") && !d.marker.includes("extra=="));
+
+          let size = 0;
+          const urls = data.urls ?? [];
+          const wheel = urls.find(u => u.packagetype === "bdist_wheel");
+          const sdist = urls.find(u => u.packagetype === "sdist");
+          size = (wheel || sdist)?.size || 0;
+
+          let license = info.license || "";
+          const licenseClassifier = (info.classifiers ?? []).find(c => c.startsWith("License ::"));
+          if (licenseClassifier) license = licenseClassifier.split(" :: ").pop();
+          if (license.length > 80) license = license.slice(0, 80) + "...";
+
+          return {
+            name: info.name,
+            version: info.version,
+            summary: info.summary || "",
+            license,
+            size,
+            projectUrls: info.project_urls || {},
+            requiresPython: info.requires_python || "",
+            dependencies: requires,
+            error: false,
+          };
+        } catch {
+          return { name: normalized, version: "?", summary: "", license: "", size: 0, dependencies: [], error: true };
+        }
+      })();
+
+      cache.set(normalized, promise);
+      return promise;
+    }
+
+    // --- Concurrency limiter ---
+    function semaphore(max) {
+      let active = 0;
+      const queue = [];
+      return function limit(fn) {
+        return new Promise((resolve, reject) => {
+          const run = async () => {
+            active++;
+            try { resolve(await fn()); } catch (e) { reject(e); } finally {
+              active--;
+              if (queue.length) queue.shift()();
+            }
+          };
+          if (active < max) run(); else queue.push(run);
+        });
+      };
+    }
+    const limit = semaphore(8);
+
+    // --- Graph builder ---
+    let lastGraph = null;
+
+    async function buildGraph(rootDeps, projectName, maxDepth, onProgress) {
+      const edges = [];
+      const nodes = new Map();
+      const visited = new Set();
+
+      nodes.set("__root__", { name: projectName, version: "", depth: 0, error: false, size: 0, license: "", dependencies: [], summary: "" });
+
+      async function resolve(depName, parentKey, depth) {
+        if (depth > maxDepth) return;
+        const key = normalizeName(depName);
+        edges.push({ from: parentKey, to: key });
+        if (visited.has(key)) return;
+        visited.add(key);
+
+        onProgress(`Fetching ${depName}... (${visited.size} packages)`);
+        const info = await limit(() => fetchPackageInfo(key));
+        nodes.set(key, { ...info, depth });
+
+        await Promise.all(
+          info.dependencies.map(d => resolve(d.name, key, depth + 1))
+        );
+      }
+
+      await Promise.all(
+        rootDeps.map(d => resolve(d.name, "__root__", 1))
+      );
+
+      const graph = { nodes, edges };
+      lastGraph = graph;
+      return graph;
+    }
+
+    // --- DOT generation ---
+    function escDot(s) { return s.replace(/"/g, '\\"'); }
+
+    function generateDot(graph) {
+      const colors = ["#22c55e", "#3b82f6", "#f59e0b", "#a855f7"];
+
+      const dependedBy = new Map();
+      for (const { to } of graph.edges) {
+        dependedBy.set(to, (dependedBy.get(to) || 0) + 1);
+      }
+
+      const lines = [
+        "digraph {",
+        '  rankdir=LR;',
+        '  node [shape=box style="rounded,filled" fontname="system-ui" fontsize=10 height=0 margin="0.06,0.04"];',
+        '  edge [color="#aaa" arrowsize=0.5];',
+      ];
+
+      for (const [id, node] of graph.nodes) {
+        if (!node) continue;
+        const c = colors[Math.min(node.depth, colors.length - 1)];
+        const count = dependedBy.get(id) || 0;
+        const countLabel = count > 1 ? ` (${count})` : "";
+        const sizeLabel = node.size ? `\\n${formatSize(node.size)}` : "";
+        const nameVersion = node.version ? `${escDot(node.name)}@${escDot(node.version)}` : escDot(node.name);
+        const label = `${nameVersion}${countLabel}${sizeLabel}`;
+        const border = node.error ? "#dc2626" : c;
+        const fill = node.error ? "#fef2f233" : c + "22";
+        const pw = node.depth === 0 ? 2 : count > 3 ? 2 : 1;
+        lines.push(`  "${escDot(id)}" [label="${label}" fillcolor="${fill}" color="${border}" penwidth=${pw}];`);
+      }
+
+      for (const { from, to } of graph.edges) {
+        lines.push(`  "${escDot(from)}" -> "${escDot(to)}";`);
+      }
+
+      lines.push("}");
+      return lines.join("\n");
+    }
+
+    // --- Stats ---
+    function computeStats(graph) {
+      let direct = 0, transitive = 0, errors = 0, totalSize = 0;
+      const licenses = new Map();
+
+      for (const [id, node] of graph.nodes) {
+        if (!node || id === "__root__") continue;
+        if (node.depth === 1) direct++; else transitive++;
+        if (node.error) errors++;
+        totalSize += node.size || 0;
+        const lic = node.license || "Unknown";
+        licenses.set(lic, (licenses.get(lic) || 0) + 1);
+      }
+
+      return { direct, transitive, errors, totalSize, licenses };
+    }
+
+    function renderStatsBar(stats) {
+      const bar = document.getElementById("stats-bar");
+      bar.innerHTML = [
+        `<span class="stat"><b>${stats.direct}</b> direct</span>`,
+        `<span class="stat"><b>${stats.transitive}</b> transitive</span>`,
+        `<span class="stat"><b>${stats.direct + stats.transitive}</b> total</span>`,
+        `<span class="stat"><b>${formatSize(stats.totalSize)}</b> size</span>`,
+        stats.errors > 0 ? `<span class="stat" style="color:#dc2626"><b>${stats.errors}</b> errors</span>` : "",
+      ].join("");
+      bar.classList.add("active");
+    }
+
+    function renderGraphTab(stats) {
+      const tab = document.getElementById("tab-graph");
+
+      // Sort licenses by count desc
+      const sortedLicenses = [...stats.licenses.entries()].sort((a, b) => b[1] - a[1]);
+      const licRows = sortedLicenses.map(([lic, count]) => {
+        const cls = lic === "Unknown" || lic === "" ? "license-unknown"
+          : lic.match(/MIT|BSD|Apache|ISC|PSF|LGPL|MPL/i) ? "license-ok" : "license-warn";
+        return `<tr><td class="${cls}">${lic || "Unknown"}</td><td>${count}</td></tr>`;
+      }).join("");
+
+      tab.innerHTML = `
+        <dl class="graph-stats">
+          <dt>Direct dependencies</dt><dd>${stats.direct}</dd>
+          <dt>Transitive dependencies</dt><dd>${stats.transitive}</dd>
+          <dt>Total packages</dt><dd>${stats.direct + stats.transitive}</dd>
+          <dt>Total download size</dt><dd>${formatSize(stats.totalSize)}</dd>
+          ${stats.errors > 0 ? `<dt>Fetch errors</dt><dd style="color:#dc2626">${stats.errors}</dd>` : ""}
+          <dt>Licenses (${stats.licenses.size} unique)</dt>
+          <dd><table class="license-table">${licRows}</table></dd>
+        </dl>
+      `;
+    }
+
+    // --- Pan & Zoom ---
+    function setupPanZoom(container) {
+      let scale = 1, tx = 0, ty = 0, dragging = false, lastX, lastY;
+
+      function applyTransform() {
+        const svg = container.querySelector("svg");
+        if (svg) svg.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+      }
+
+      container.addEventListener("wheel", e => {
+        e.preventDefault();
+        const factor = e.deltaY > 0 ? 0.9 : 1.1;
+        const rect = container.getBoundingClientRect();
+        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+        tx = mx - factor * (mx - tx);
+        ty = my - factor * (my - ty);
+        scale *= factor;
+        applyTransform();
+      }, { passive: false });
+
+      container.addEventListener("mousedown", e => {
+        dragging = true; lastX = e.clientX; lastY = e.clientY;
+      });
+      window.addEventListener("mousemove", e => {
+        if (!dragging) return;
+        tx += e.clientX - lastX; ty += e.clientY - lastY;
+        lastX = e.clientX; lastY = e.clientY;
+        applyTransform();
+      });
+      window.addEventListener("mouseup", () => { dragging = false; });
+
+      return { reset() { scale = 1; tx = 0; ty = 0; applyTransform(); } };
+    }
+
+    // --- Sidebar: Module tab ---
+    function showModule(nodeId) {
+      if (!lastGraph) return;
+      const node = lastGraph.nodes.get(nodeId);
+      if (!node || nodeId === "__root__") return;
+
+      const tab = document.getElementById("tab-module");
+
+      const usedBy = lastGraph.edges.filter(e => e.to === nodeId).map(e => {
+        const n = lastGraph.nodes.get(e.from);
+        return n ? n.name : e.from;
+      });
+
+      const licenseClass = !node.license || node.license === "Unknown"
+        ? "license-unknown" : node.license.match(/MIT|BSD|Apache|ISC|PSF|LGPL|MPL/i)
+        ? "license-ok" : "license-warn";
+
+      const pypiUrl = `https://pypi.org/project/${normalizeName(node.name)}/`;
+      const urls = node.projectUrls || {};
+      const linksHtml = Object.entries(urls).map(([k, v]) =>
+        `<a href="${v}" target="_blank">${k}</a>`
+      ).join(" &middot; ");
+
+      const deps = node.dependencies || [];
+      const depsHtml = deps.length === 0
+        ? '<p style="color:#999;margin-top:0.5rem;">No dependencies</p>'
+        : `<ul class="dep-list">${deps.map(d => `<li>${d.raw}</li>`).join("")}</ul>`;
+
+      tab.innerHTML = `
+        <div class="detail-row">
+          <div class="detail-label">Package</div>
+          <div class="detail-value"><b>${node.name}</b></div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">Version</div>
+          <div class="detail-value">${node.version || "?"}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">Summary</div>
+          <div class="detail-value">${node.summary || "-"}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">License</div>
+          <div class="detail-value ${licenseClass}">${node.license || "Unknown"}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">Size</div>
+          <div class="detail-value">${formatSize(node.size)}</div>
+        </div>
+        ${node.requiresPython ? `<div class="detail-row">
+          <div class="detail-label">Python requires</div>
+          <div class="detail-value">${node.requiresPython}</div>
+        </div>` : ""}
+        <div class="detail-row">
+          <div class="detail-label">Links</div>
+          <div class="detail-value"><a href="${pypiUrl}" target="_blank">PyPI</a>${linksHtml ? " &middot; " + linksHtml : ""}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">Used by (${usedBy.length})</div>
+          <div class="detail-value">${usedBy.join(", ") || "-"}</div>
+        </div>
+        <div class="detail-row">
+          <div class="detail-label">Dependencies (${deps.length})</div>
+          ${depsHtml}
+        </div>
+      `;
+
+      // Switch to module tab
+      switchTab("module");
+    }
+
+    // --- Tab switching ---
+    function switchTab(name) {
+      document.querySelectorAll(".sidebar-tab").forEach(t => t.classList.toggle("active", t.dataset.tab === name));
+      document.querySelectorAll(".tab-panel").forEach(t => t.classList.toggle("active", t.id === "tab-" + name));
+    }
+
+    // --- UI wiring ---
+    const graphContainer = document.getElementById("graph-container");
+    const panZoom = setupPanZoom(graphContainer);
+
+    document.querySelectorAll(".sidebar-tab").forEach(tab => {
+      tab.addEventListener("click", () => switchTab(tab.dataset.tab));
+    });
+
+    graphContainer.addEventListener("click", e => {
+      const nodeGroup = e.target.closest(".node");
+      if (!nodeGroup) return;
+      const titleEl = nodeGroup.querySelector("title");
+      if (titleEl?.textContent) showModule(titleEl.textContent);
+    });
+
+    const statusEl = document.getElementById("status");
+    const errorEl = document.getElementById("error");
+
+    function showStatus(msg) {
+      statusEl.textContent = msg;
+      statusEl.classList.toggle("active", !!msg);
+    }
+    function showError(msg) {
+      errorEl.textContent = msg;
+      errorEl.classList.toggle("active", !!msg);
+    }
+
+    async function getTomlInput() {
+      const text = document.getElementById("toml-input").value.trim();
+      if (text) return text;
+      const url = document.getElementById("url-input").value.trim();
+      if (url) {
+        showStatus("Fetching pyproject.toml...");
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`Failed to fetch URL: ${resp.status}`);
+        return await resp.text();
+      }
+      throw new Error("Paste pyproject.toml contents or provide a URL");
+    }
+
+    document.getElementById("go-btn").addEventListener("click", async () => {
+      const goBtn = document.getElementById("go-btn");
+      showError("");
+      goBtn.disabled = true;
+      cache.clear();
+
+      try {
+        const toml = await getTomlInput();
+        const deps = extractDependencies(toml);
+
+        let projectName = "project";
+        try { projectName = parse(toml).project?.name || "project"; } catch {}
+
+        const maxDepth = Math.max(1, Math.min(10, parseInt(document.getElementById("depth-input").value) || 2));
+        const graph = await buildGraph(deps, projectName, maxDepth, showStatus);
+
+        showStatus("Rendering graph...");
+        const dot = generateDot(graph);
+        const viz = await vizPromise;
+        const svg = viz.renderSVGElement(dot);
+
+        graphContainer.innerHTML = "";
+        graphContainer.appendChild(svg);
+        panZoom.reset();
+
+        const stats = computeStats(graph);
+        renderStatsBar(stats);
+        renderGraphTab(stats);
+        showStatus("");
+        switchTab("graph");
+      } catch (e) {
+        showError(e.message);
+        showStatus("");
+      } finally {
+        goBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
