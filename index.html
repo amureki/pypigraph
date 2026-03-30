@@ -13,6 +13,16 @@
   <meta name="twitter:title" content="pypigraph">
   <meta name="twitter:description" content="Visualize Python package dependency graphs from pyproject.toml.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='8' cy='8' r='3' fill='%232563eb'/><circle cx='24' cy='8' r='3' fill='%2322c55e'/><circle cx='16' cy='24' r='3' fill='%23f59e0b'/><line x1='8' y1='8' x2='24' y2='8' stroke='%236e7781' stroke-width='1.5'/><line x1='8' y1='8' x2='16' y2='24' stroke='%236e7781' stroke-width='1.5'/><line x1='24' y1='8' x2='16' y2='24' stroke='%236e7781' stroke-width='1.5'/></svg>">
+  <script>
+    // Apply saved theme immediately to prevent flash of light mode
+    (function() {
+      var t = localStorage.getItem("pypigraph-theme");
+      if (t && t !== "auto") document.documentElement.setAttribute("data-theme", t);
+      // If URL has params, we know a build is coming — mark it so CSS can show loading state
+      var p = new URLSearchParams(location.search);
+      if (p.has("pkg") || p.has("url")) document.documentElement.setAttribute("data-loading", "");
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -118,23 +128,47 @@
       margin-left: auto;
       display: flex;
       align-items: center;
-      gap: 0;
       flex-shrink: 0;
     }
+    .theme-switcher {
+      position: relative;
+      display: flex;
+      background: var(--hover-bg);
+      border-radius: 8px;
+      padding: 2px;
+    }
+    .theme-switcher-indicator {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      height: calc(100% - 4px);
+      width: calc(33.333% - 1.33px); /* subtract 4px container padding / 3 buttons */
+      background: var(--bg-surface);
+      border-radius: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      z-index: 0;
+      opacity: 0;
+    }
+    .theme-switcher-indicator.ready {
+      opacity: 1;
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
     .theme-btn {
-      padding: 0.2rem 0.4rem;
-      border: 1px solid var(--input-border);
-      background: var(--input-bg);
+      position: relative;
+      z-index: 1;
+      padding: 0.25rem 0.5rem;
+      border: none;
+      background: none;
       color: var(--text-faint);
       font-size: 0.7rem;
+      font-family: "DM Sans", system-ui, sans-serif;
       cursor: pointer;
-      border-right: none;
+      border-radius: 6px;
+      transition: color 0.2s;
+      line-height: 1;
     }
-    .theme-btn:first-child { border-radius: 4px 0 0 4px; }
-    .theme-btn:last-child { border-radius: 0 4px 4px 0; border-right: 1px solid var(--input-border); }
-    .theme-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .theme-btn.active + .theme-btn { border-left-color: var(--accent); }
-    .theme-btn:hover:not(.active) { background: var(--hover-bg); }
+    .theme-btn.active { color: var(--text); font-weight: 500; }
+    .theme-btn:hover:not(.active) { color: var(--text-muted); }
 
     #main-area {
       flex: 1;
@@ -382,6 +416,19 @@
       gap: 0.75rem;
     }
     #empty-state.hidden { display: none; }
+    /* When loading from URL params, hide empty state and show spinner */
+    :root[data-loading] #empty-state .empty-motif,
+    :root[data-loading] #empty-state h2,
+    :root[data-loading] #empty-state p { display: none; }
+    :root[data-loading] #empty-state::after {
+      content: "Loading...";
+      font-size: 0.8rem;
+      color: var(--text-faint);
+    }
+    /* Hide sidebar content and stats bar during URL-param load to prevent flash */
+    :root[data-loading] .tab-panel { visibility: hidden; }
+    :root[data-loading] #stats-bar { display: none !important; }
+    :root[data-loading] #sidebar-tabs { visibility: hidden; }
     #empty-state .empty-motif {
       width: 120px;
       height: 120px;
@@ -467,6 +514,14 @@
       transition: background 0.15s, color 0.15s;
     }
     #zoom-controls button:hover { background: var(--hover-bg); color: var(--text); }
+    .toolbar-label {
+      font-size: 0.6rem;
+      color: var(--text-faintest);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0 0.25rem;
+      user-select: none;
+    }
     .toolbar-sep {
       width: 1px;
       height: 18px;
@@ -544,9 +599,12 @@
     <h1>pypigraph<span id="header-context"></span></h1>
     <div id="stats-bar"></div>
     <div class="header-right" role="group" aria-label="Color theme">
-      <button class="theme-btn active" data-theme="auto">Auto</button>
-      <button class="theme-btn" data-theme="light">Light</button>
-      <button class="theme-btn" data-theme="dark">Dark</button>
+      <div class="theme-switcher">
+        <div class="theme-switcher-indicator"></div>
+        <button class="theme-btn" data-theme="auto">Auto</button>
+        <button class="theme-btn" data-theme="light">Light</button>
+        <button class="theme-btn" data-theme="dark">Dark</button>
+      </div>
     </div>
   </header>
   <div id="main-area">
@@ -571,7 +629,7 @@
         <div class="examples">
           <p>For example:</p>
           <p>A URL to a pyproject.toml: <a class="example-link" data-url="https://raw.githubusercontent.com/python/pythondotorg/refs/heads/main/pyproject.toml">pythondotorg</a></p>
-          <p>A package name: <a class="example-link" data-pkg="django">django</a></p>
+          <p>A package name: <a class="example-link" data-pkg="fastapi">fastapi</a></p>
           <p>Multiple packages: <a class="example-link" data-toml="django&#10;celery&#10;requests">django, celery, requests</a></p>
         </div>
       </div>
@@ -620,16 +678,19 @@
         <span id="search-count"></span>
       </div>
       <div id="zoom-controls">
+        <span class="toolbar-label">Zoom</span>
         <button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
         <button id="zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
         <button id="zoom-fit" title="Fit all" aria-label="Fit graph to view">Fit</button>
         <button id="zoom-reset" title="1:1" aria-label="Reset zoom to 100%">1:1</button>
         <span class="toolbar-sep"></span>
+        <span class="toolbar-label">Layout</span>
         <select id="layout-select" title="Layout" aria-label="Graph layout">
           <option value="dot">Tree</option>
           <option value="twopi">Radial</option>
         </select>
         <span class="toolbar-sep"></span>
+        <span class="toolbar-label">Color</span>
         <select id="color-select" title="Color by" aria-label="Color coding mode">
           <option value="depth">Depth</option>
           <option value="freshness">Freshness</option>
@@ -656,6 +717,14 @@
 
     // --- Theme ---
     const themeBtns = document.querySelectorAll(".theme-btn");
+    const themeIndicator = document.querySelector(".theme-switcher-indicator");
+    const themeOrder = ["auto", "light", "dark"];
+
+    function moveIndicator(val) {
+      const idx = Math.max(0, themeOrder.indexOf(val));
+      themeIndicator.style.transform = `translateX(${idx * 100}%)`;
+    }
+
     function applyTheme(val) {
       if (val === "auto") {
         document.documentElement.removeAttribute("data-theme");
@@ -663,13 +732,25 @@
         document.documentElement.setAttribute("data-theme", val);
       }
       localStorage.setItem("pypigraph-theme", val);
-      themeBtns.forEach(b => b.classList.toggle("active", b.dataset.theme === val));
+      themeBtns.forEach(b => {
+        const isActive = b.dataset.theme === val;
+        b.classList.toggle("active", isActive);
+        b.setAttribute("aria-pressed", isActive);
+      });
+      moveIndicator(val);
       if (lastGraph) renderGraph(lastGraph);
     }
     const savedTheme = localStorage.getItem("pypigraph-theme") || "auto";
     // Apply theme without re-rendering (graph not built yet)
     if (savedTheme !== "auto") document.documentElement.setAttribute("data-theme", savedTheme);
-    themeBtns.forEach(b => b.classList.toggle("active", b.dataset.theme === savedTheme));
+    themeBtns.forEach(b => {
+      const isActive = b.dataset.theme === savedTheme;
+      b.classList.toggle("active", isActive);
+      b.setAttribute("aria-pressed", isActive);
+    });
+    moveIndicator(savedTheme);
+    // Show indicator after positioning — no blink from wrong position
+    requestAnimationFrame(() => themeIndicator.classList.add("ready"));
     themeBtns.forEach(b => b.addEventListener("click", () => applyTheme(b.dataset.theme)));
 
     function isDarkMode() {
@@ -1672,6 +1753,7 @@
         showStatus("");
       } finally {
         goBtn.disabled = false;
+        document.documentElement.removeAttribute("data-loading");
       }
     }
 
