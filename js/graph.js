@@ -29,23 +29,22 @@ function colorByLicense(node) {
   return "#f59e0b";
 }
 
-export let cachedMaxSize = 0;
-
-export function setCachedMaxSize(val) {
-  cachedMaxSize = val;
-}
-
-function colorBySize(node) {
+function colorBySize(node, maxSize) {
   if (node.depth === 0 || !node.size) return "#94a3b8";
-  if (cachedMaxSize === 0) return "#94a3b8";
-  const ratio = node.size / cachedMaxSize;
+  if (maxSize === 0) return "#94a3b8";
+  const ratio = node.size / maxSize;
   if (ratio < 0.1) return "#22c55e";
   if (ratio < 0.3) return "#84cc16";
   if (ratio < 0.6) return "#f59e0b";
   return "#dc2626";
 }
 
-export const colorModes = { depth: colorByDepth, freshness: colorByFreshness, license: colorByLicense, size: colorBySize };
+// Color function factory. maxSize is only needed for the "size" mode.
+export function getColorFn(mode, maxSize = 0) {
+  const fns = { depth: colorByDepth, freshness: colorByFreshness, license: colorByLicense };
+  if (mode === "size") return (node) => colorBySize(node, maxSize);
+  return fns[mode] || colorByDepth;
+}
 
 // --- DOT generation ---
 export function graphToDot(graph, colorFn, engine) {
@@ -66,7 +65,6 @@ export function graphToDot(graph, colorFn, engine) {
     isDot ? `  newrank=true;` : "",
     !isDot ? `  overlap=prism;` : "",
     !isDot ? `  sep="+10";` : "",
-    engine === "sfdp" ? `  K=1.2;` : "",
     `  node [shape=box, style="rounded,filled", fontname="DM Sans, system-ui, sans-serif", fontsize=11, fontcolor="${fontColor}", margin="0.15,0.08"];`,
     `  edge [color="${isDarkMode() ? '#555' : '#6e7781'}", arrowsize=0.7, arrowhead=vee];`,
   ].filter(Boolean);
@@ -102,9 +100,9 @@ export function graphToDot(graph, colorFn, engine) {
 // --- Rendering ---
 let graphClickCleanup = null;
 
-export function renderGraph(graph, { graphviz, currentColorMode, currentLayout, showModule }) {
+export function renderGraph(graph, { graphviz, currentColorMode, currentLayout, maxSize, showModule }) {
   const container = document.getElementById("graph-container");
-  const colorFn = colorModes[currentColorMode];
+  const colorFn = getColorFn(currentColorMode, maxSize);
   const dot = graphToDot(graph, colorFn, currentLayout);
   const svg = graphviz.layout(dot, "svg", currentLayout);
   container.innerHTML = svg;
@@ -211,15 +209,12 @@ export function renderGraph(graph, { graphviz, currentColorMode, currentLayout, 
   }, { signal: clickAc.signal });
   graphClickCleanup = () => clickAc.abort();
 
-  // Store references for search
-  window._graphNodesByTitle = nodesByTitle;
-  window._graphHighlightNode = highlightNode;
-  window._graphClearHighlight = clearHighlight;
+  return { nodesByTitle, highlightNode, clearHighlight };
 }
 
-export function recolorGraph(graph, currentColorMode) {
+export function recolorGraph(graph, currentColorMode, maxSize = 0) {
   const container = document.getElementById("graph-container");
-  const colorFn = colorModes[currentColorMode];
+  const colorFn = getColorFn(currentColorMode, maxSize);
   container.querySelectorAll(".node").forEach(el => {
     const title = el.querySelector("title");
     if (!title) return;

@@ -72,7 +72,7 @@ function packagesByLicense(graph) {
   return map;
 }
 
-export function renderGraphTab(graph, stats) {
+export function renderGraphTab(graph, stats, { onSelectPackage } = {}) {
   const tab = document.getElementById("tab-graph");
   const pkgsByLic = packagesByLicense(graph);
   const sortedLicenses = [...stats.licenses.entries()].sort((a, b) => b[1] - a[1]);
@@ -146,7 +146,7 @@ export function renderGraphTab(graph, stats) {
   tab.querySelectorAll("[data-pkg-id]").forEach(el => {
     el.addEventListener("click", (e) => {
       e.stopPropagation();
-      showModule(el.dataset.pkgId, graph);
+      (onSelectPackage || showModule)(el.dataset.pkgId, graph);
     });
   });
 }

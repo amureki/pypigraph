@@ -1,4 +1,4 @@
-import { parsePep508, normalizeName, errorPackage } from "./utils.js";
+import { ROOT_ID, parsePep508, normalizeName, errorPackage } from "./utils.js";
 
 // --- Concurrency limiter ---
 function semaphore(max) {
@@ -120,7 +120,6 @@ function satisfiesSpec(version, specifier) {
 
 // --- Graph builder ---
 export async function buildGraph(rootDeps, projectName, maxDepth, onProgress) {
-  const ROOT_ID = "__root__";
   const edgeSet = new Set();
   const edges = [];
   const nodes = new Map();

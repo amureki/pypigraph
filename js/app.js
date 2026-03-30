@@ -2,13 +2,14 @@ import { parse } from "https://cdn.jsdelivr.net/npm/smol-toml@1.3.1/+esm";
 import { Graphviz } from "https://cdn.jsdelivr.net/npm/@hpcc-js/wasm-graphviz@1.21.2/+esm";
 import { ROOT_ID, parsePep508, normalizeName } from "./utils.js";
 import { buildGraph, clearCache } from "./pypi.js";
-import { renderGraph, recolorGraph, setCachedMaxSize } from "./graph.js";
+import { renderGraph, recolorGraph } from "./graph.js";
 import { svgState, zoomAt, fitGraph, applyTransform } from "./pan-zoom.js";
 import { switchTab, showStatus, showError, computeStats, renderStatsBar, renderGraphTab, showModule } from "./sidebar.js";
 
 const graphviz = await Graphviz.load();
 
 let lastGraph = null;
+let lastMaxSize = 0;
 let currentColorMode = localStorage.getItem("pypigraph-color") || "depth";
 let currentLayout = localStorage.getItem("pypigraph-layout") || "dot";
 
@@ -79,11 +80,14 @@ document.querySelectorAll(".sidebar-tab").forEach(tab => {
 });
 
 // --- Render helper ---
+let graphRefs = null; // { nodesByTitle, highlightNode, clearHighlight }
+
 function doRenderGraph(graph) {
-  renderGraph(graph, {
+  graphRefs = renderGraph(graph, {
     graphviz,
     currentColorMode,
     currentLayout,
+    maxSize: lastMaxSize,
     showModule: (nodeId) => showModule(nodeId, graph),
   });
 }
@@ -94,9 +98,9 @@ const searchCount = document.getElementById("search-count");
 
 searchInput.addEventListener("input", () => {
   const query = searchInput.value.trim().toLowerCase();
-  if (!query || !lastGraph || !window._graphNodesByTitle) {
+  if (!query || !lastGraph || !graphRefs) {
     searchCount.textContent = "";
-    if (window._graphClearHighlight) window._graphClearHighlight();
+    if (graphRefs) graphRefs.clearHighlight();
     return;
   }
   const matches = [];
@@ -106,14 +110,14 @@ searchInput.addEventListener("input", () => {
   }
   searchCount.textContent = `${matches.length} found`;
   if (matches.length === 0) {
-    if (window._graphClearHighlight) window._graphClearHighlight();
+    graphRefs.clearHighlight();
     return;
   }
   const container = document.getElementById("graph-container");
   container.querySelectorAll(".node").forEach(el => el.style.opacity = "0.15");
   container.querySelectorAll(".edge").forEach(el => el.style.opacity = "0.05");
   for (const id of matches) {
-    const el = window._graphNodesByTitle.get(id);
+    const el = graphRefs.nodesByTitle.get(id);
     if (el) el.style.opacity = "1";
   }
 });
@@ -121,11 +125,11 @@ searchInput.addEventListener("input", () => {
 searchInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     const query = searchInput.value.trim().toLowerCase();
-    if (!query || !lastGraph || !window._graphNodesByTitle) return;
+    if (!query || !lastGraph || !graphRefs) return;
     for (const [id, node] of lastGraph.nodes) {
       if (!node || id === ROOT_ID) continue;
       if (node.name.toLowerCase().includes(query)) {
-        const el = window._graphNodesByTitle.get(id);
+        const el = graphRefs.nodesByTitle.get(id);
         if (el) {
           const container = document.getElementById("graph-container");
           const bbox = el.getBBox();
@@ -143,7 +147,7 @@ searchInput.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     searchInput.value = "";
     searchCount.textContent = "";
-    if (window._graphClearHighlight) window._graphClearHighlight();
+    if (graphRefs) graphRefs.clearHighlight();
   }
 });
 
@@ -183,7 +187,7 @@ layoutSelect.addEventListener("change", (e) => {
 colorSelect.addEventListener("change", (e) => {
   currentColorMode = e.target.value;
   localStorage.setItem("pypigraph-color", currentColorMode);
-  if (lastGraph) recolorGraph(lastGraph, currentColorMode);
+  if (lastGraph) recolorGraph(lastGraph, currentColorMode, lastMaxSize);
 });
 
 // --- TOML parsing ---
@@ -261,11 +265,10 @@ async function runBuild() {
 
     lastGraph = graph;
 
-    let maxSize = 0;
+    lastMaxSize = 0;
     for (const [id, n] of graph.nodes) {
-      if (n && id !== ROOT_ID && n.size > maxSize) maxSize = n.size;
+      if (n && id !== ROOT_ID && n.size > lastMaxSize) lastMaxSize = n.size;
     }
-    setCachedMaxSize(maxSize);
 
     showStatus("Rendering graph...");
 
