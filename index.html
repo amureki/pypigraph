@@ -5,12 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>pypigraph</title>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/webcola@3.4.0/WebCola/cola.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-cola@2.5.1/cytoscape-cola.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/elkjs@0.9.3/lib/elk.bundled.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-elk@2.2.0/dist/cytoscape-elk.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -260,11 +259,15 @@
         <button id="zoom-out" title="Zoom out">&minus;</button>
         <button id="zoom-fit" title="Fit all">Fit</button>
         <button id="zoom-reset" title="1:1">1:1</button>
-        <button id="re-layout" title="Re-layout">↻</button>
         <select id="layout-select" title="Layout">
-          <option value="elk">ELK</option>
-          <option value="dagre">Tree</option>
-          <option value="cola">Cola</option>
+          <option value="elk">Layout: Tree</option>
+          <option value="fcose">Layout: fCoSE</option>
+        </select>
+        <select id="color-select" title="Color by">
+          <option value="depth">Color: depth</option>
+          <option value="freshness">Color: freshness</option>
+          <option value="license">Color: license</option>
+          <option value="size">Color: size</option>
         </select>
       </div>
     </div>
@@ -274,8 +277,8 @@
     import { parse } from "https://cdn.jsdelivr.net/npm/smol-toml@1.3.1/+esm";
 
     // Register layout extensions (globals from UMD scripts)
-    if (window.cytoscapeCola) cytoscape.use(window.cytoscapeCola);
     if (window.cytoscapeElk) cytoscape.use(window.cytoscapeElk);
+    if (window.cytoscapeFcose) cytoscape.use(window.cytoscapeFcose);
 
     const ROOT_ID = "__root__";
 
@@ -483,8 +486,69 @@
       return { nodes, edges };
     }
 
-    // --- Cytoscape rendering ---
+    // --- Coloring ---
     const depthColors = ["#22c55e", "#3b82f6", "#f59e0b", "#a855f7", "#ec4899"];
+
+    function colorByDepth(node) {
+      if (node.pinnedBehind) return "#d97706";
+      return depthColors[Math.min(node.depth, depthColors.length - 1)];
+    }
+
+    function colorByFreshness(node) {
+      if (!node.releaseDate || node.depth === 0) return "#94a3b8";
+      const days = (Date.now() - new Date(node.releaseDate).getTime()) / 86400000;
+      if (days < 90) return "#22c55e";       // < 3 months — green
+      if (days < 365) return "#84cc16";      // < 1 year — lime
+      if (days < 730) return "#f59e0b";      // < 2 years — amber
+      return "#dc2626";                       // 2+ years — red
+    }
+
+    function colorByLicense(node) {
+      if (node.depth === 0) return "#94a3b8";
+      const lic = (node.license || "").toLowerCase();
+      if (!lic || lic === "unknown") return "#dc2626";  // unknown — red
+      if (/mit|bsd|apache|isc|psf|unlicense/.test(lic)) return "#22c55e";  // permissive — green
+      if (/mpl/.test(lic)) return "#84cc16";             // weak copyleft — lime
+      if (/lgpl/.test(lic)) return "#f59e0b";            // copyleft — amber
+      if (/gpl|agpl/.test(lic)) return "#dc2626";        // strong copyleft — red
+      return "#f59e0b";                                   // other — amber
+    }
+
+    function colorBySize(node) {
+      if (node.depth === 0 || !node.size) return "#94a3b8";
+      // compute max size from current graph
+      let maxSize = 0;
+      if (lastGraph) {
+        for (const [id, n] of lastGraph.nodes) {
+          if (n && id !== ROOT_ID && n.size > maxSize) maxSize = n.size;
+        }
+      }
+      if (maxSize === 0) return "#94a3b8";
+      const ratio = node.size / maxSize;
+      if (ratio < 0.1) return "#22c55e";      // small — green
+      if (ratio < 0.3) return "#84cc16";      // moderate — lime
+      if (ratio < 0.6) return "#f59e0b";      // large — amber
+      return "#dc2626";                        // very large — red
+    }
+
+    const colorModes = { depth: colorByDepth, freshness: colorByFreshness, license: colorByLicense, size: colorBySize };
+    let currentColorMode = "depth";
+
+    function recolorGraph() {
+      if (!cy || !lastGraph) return;
+      const colorFn = colorModes[currentColorMode];
+      for (const [id, node] of lastGraph.nodes) {
+        if (!node) continue;
+        const color = colorFn(node);
+        const cyNode = cy.getElementById(id);
+        if (cyNode.length) {
+          cyNode.data("color", color);
+          cyNode.data("borderColor", node.error ? "#dc2626" : color);
+        }
+      }
+    }
+
+    // --- Cytoscape rendering ---
     let cy = null;
 
     function renderGraph(graph) {
@@ -493,6 +557,7 @@
         dependedBy.set(to, (dependedBy.get(to) || 0) + 1);
       }
 
+      const colorFn = colorModes[currentColorMode];
       const elements = [];
 
       for (const [id, node] of graph.nodes) {
@@ -502,7 +567,7 @@
         const sizeLabel = node.size ? `\n${formatSize(node.size)}` : "";
         const dateLabel = node.releaseDate ? ` · ${node.releaseDate}` : "";
         const nameVersion = node.version ? `${node.name}@${node.version}` : node.name;
-        const color = node.pinnedBehind ? "#d97706" : depthColors[Math.min(node.depth, depthColors.length - 1)];
+        const color = colorFn(node);
 
         elements.push({
           group: "nodes",
@@ -636,18 +701,18 @@
     document.getElementById("zoom-reset").addEventListener("click", () => { if (cy) { cy.zoom(1); cy.center(); } });
     const layouts = {
       elk: { name: "elk", elkConstructor: window.ELK, elk: { algorithm: "layered", "elk.direction": "DOWN", "elk.spacing.nodeNode": "50", "elk.layered.spacing.nodeNodeBetweenLayers": "120" }, fit: true, padding: 30 },
-      dagre: { name: "dagre", rankDir: "TB", align: "UL", ranker: "tight-tree", nodeSep: 50, rankSep: 120, edgeSep: 20, animate: false, fit: true, padding: 30 },
-      cola: { name: "cola", nodeSpacing: 40, edgeLength: 150, animate: false, fit: true, padding: 30, infinite: false, maxSimulationTime: 4000 },
+      fcose: { name: "fcose", quality: "proof", randomize: true, seed: 42, nodeRepulsion: 15000, idealEdgeLength: 200, edgeElasticity: 0.3, nestingFactor: 0.1, gravity: 0.15, numIter: 5000, animate: false, fit: true, padding: 30 },
     };
     let currentLayout = "elk";
 
-    document.getElementById("re-layout").addEventListener("click", () => {
-      if (cy) cy.layout(layouts[currentLayout]).run();
-    });
     document.getElementById("layout-select").addEventListener("change", (e) => {
       if (!cy) return;
       currentLayout = e.target.value;
       cy.layout(layouts[currentLayout]).run();
+    });
+    document.getElementById("color-select").addEventListener("change", (e) => {
+      currentColorMode = e.target.value;
+      recolorGraph();
     });
 
     function highlightConnections(node) {
