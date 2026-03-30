@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>pypigraph</title>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -32,7 +35,6 @@
     }
     #stats-bar.active { display: flex; }
     #stats-bar .stat b { color: #1a1a1a; }
-    .stat-sep { color: #ccc; }
 
     #main-area {
       flex: 1;
@@ -153,12 +155,31 @@
       flex: 1;
       overflow: hidden;
       position: relative;
-      cursor: grab;
     }
-    #graph-container:active { cursor: grabbing; }
-    .mermaid-wrapper { transform-origin: 0 0; display: inline-block; }
-    .mermaid-wrapper svg { max-width: none !important; height: auto !important; }
-    #graph-container .node { cursor: pointer; }
+    #zoom-controls {
+      position: absolute;
+      top: 0.5rem;
+      right: 0.5rem;
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+      z-index: 10;
+    }
+    #zoom-controls.active { display: flex; }
+    #zoom-controls button {
+      width: 28px;
+      height: 28px;
+      border: 1px solid #ccc;
+      background: #fff;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      color: #555;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #zoom-controls button:hover { background: #f0f0f0; }
   </style>
 </head>
 <body>
@@ -193,14 +214,18 @@
         <p class="module-empty">Click a package in the graph</p>
       </div>
     </aside>
-    <div id="graph-container"></div>
+    <div id="graph-container">
+      <div id="zoom-controls">
+        <button id="zoom-in" title="Zoom in">+</button>
+        <button id="zoom-out" title="Zoom out">&minus;</button>
+        <button id="zoom-fit" title="Fit all">Fit</button>
+        <button id="zoom-reset" title="1:1">1:1</button>
+      </div>
+    </div>
   </div>
 
   <script type="module">
     import { parse } from "https://cdn.jsdelivr.net/npm/smol-toml@1.3.1/+esm";
-    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/+esm";
-
-    mermaid.initialize({ startOnLoad: false, theme: "default", flowchart: { curve: "basis", padding: 10 }, securityLevel: "loose" });
 
     // --- PEP 508 parsing ---
     function parsePep508(raw) {
@@ -340,48 +365,153 @@
       return graph;
     }
 
-    // --- Mermaid generation ---
-    // Mermaid node IDs must be alphanumeric; map normalized names to safe IDs
-    function generateMermaid(graph) {
+    // --- Cytoscape rendering ---
+    const depthColors = ["#22c55e", "#3b82f6", "#f59e0b", "#a855f7", "#ec4899"];
+    let cy = null;
+
+    function renderGraph(graph) {
       const dependedBy = new Map();
       for (const { to } of graph.edges) {
         dependedBy.set(to, (dependedBy.get(to) || 0) + 1);
       }
 
-      const idMap = new Map();
-      let idx = 0;
-      function safeId(name) {
-        if (!idMap.has(name)) idMap.set(name, "n" + idx++);
-        return idMap.get(name);
-      }
-
-      const lines = ["graph LR"];
+      const elements = [];
 
       for (const [id, node] of graph.nodes) {
         if (!node) continue;
         const count = dependedBy.get(id) || 0;
         const countLabel = count > 1 ? ` (${count})` : "";
-        const sizeLabel = node.size ? `<br/>${formatSize(node.size)}` : "";
+        const sizeLabel = node.size ? `\n${formatSize(node.size)}` : "";
         const nameVersion = node.version ? `${node.name}@${node.version}` : node.name;
-        const label = `${nameVersion}${countLabel}${sizeLabel}`;
-        const sid = safeId(id);
-        lines.push(`  ${sid}["${label}"]`);
+        const color = depthColors[Math.min(node.depth, depthColors.length - 1)];
+
+        elements.push({
+          group: "nodes",
+          data: {
+            id,
+            label: `${nameVersion}${countLabel}${sizeLabel}`,
+            depth: node.depth,
+            color,
+            borderColor: node.error ? "#dc2626" : color,
+            borderWidth: node.depth === 0 ? 3 : count > 3 ? 2.5 : 1.5,
+          },
+        });
       }
 
       // Deduplicate edges
       const edgeSet = new Set();
       for (const { from, to } of graph.edges) {
-        const key = `${from}→${to}`;
+        const key = `${from}->${to}`;
         if (edgeSet.has(key)) continue;
         edgeSet.add(key);
-        lines.push(`  ${safeId(from)} --> ${safeId(to)}`);
+        elements.push({
+          group: "edges",
+          data: { source: from, target: to },
+        });
       }
 
-      // Store reverse map for click handling
-      const reverseIdMap = new Map();
-      for (const [name, sid] of idMap) reverseIdMap.set(sid, name);
+      cy = cytoscape({
+        container: document.getElementById("graph-container"),
+        elements,
+        style: [
+          {
+            selector: "node",
+            style: {
+              label: "data(label)",
+              "text-valign": "center",
+              "text-halign": "center",
+              "font-size": "9px",
+              "font-family": "system-ui, -apple-system, sans-serif",
+              "text-wrap": "wrap",
+              "text-max-width": "140px",
+              shape: "roundrectangle",
+              width: "label",
+              height: "label",
+              padding: "6px",
+              "background-color": "data(color)",
+              "background-opacity": 0.12,
+              "border-color": "data(borderColor)",
+              "border-width": "data(borderWidth)",
+              color: "#1a1a1a",
+            },
+          },
+          {
+            selector: "node:selected",
+            style: {
+              "background-opacity": 0.3,
+              "border-width": 3,
+              "border-color": "#2563eb",
+            },
+          },
+          {
+            selector: "edge",
+            style: {
+              width: 1,
+              "line-color": "#ccc",
+              "target-arrow-color": "#bbb",
+              "target-arrow-shape": "triangle",
+              "arrow-scale": 0.6,
+              "curve-style": "bezier",
+            },
+          },
+          {
+            selector: "edge.highlighted",
+            style: {
+              "line-color": "#2563eb",
+              "target-arrow-color": "#2563eb",
+              width: 2,
+            },
+          },
+          {
+            selector: "node.dimmed",
+            style: { opacity: 0.2 },
+          },
+          {
+            selector: "edge.dimmed",
+            style: { opacity: 0.1 },
+          },
+        ],
+        layout: {
+          name: "dagre",
+          rankDir: "LR",
+          nodeSep: 30,
+          rankSep: 60,
+          edgeSep: 10,
+        },
+        minZoom: 0.1,
+        maxZoom: 3,
+        wheelSensitivity: 0.3,
+      });
 
-      return { definition: lines.join("\n"), reverseIdMap };
+      // Click node → show sidebar + highlight connections
+      cy.on("tap", "node", e => {
+        const nodeId = e.target.id();
+        highlightConnections(e.target);
+        showModule(nodeId);
+      });
+
+      // Click background → clear highlight
+      cy.on("tap", e => {
+        if (e.target === cy) {
+          cy.elements().removeClass("dimmed highlighted");
+          cy.edges().removeClass("highlighted");
+        }
+      });
+    }
+
+    // --- Zoom controls ---
+    document.getElementById("zoom-in").addEventListener("click", () => { if (cy) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
+    document.getElementById("zoom-out").addEventListener("click", () => { if (cy) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
+    document.getElementById("zoom-fit").addEventListener("click", () => { if (cy) cy.fit(undefined, 30); });
+    document.getElementById("zoom-reset").addEventListener("click", () => { if (cy) { cy.zoom(1); cy.center(); } });
+
+    function highlightConnections(node) {
+      cy.elements().addClass("dimmed");
+      // Get all connected upstream and downstream
+      const connected = node.predecessors().union(node.successors()).union(node);
+      connected.removeClass("dimmed");
+      connected.edges().removeClass("dimmed").addClass("highlighted");
+      node.removeClass("dimmed");
     }
 
     // --- Stats ---
@@ -415,8 +545,6 @@
 
     function renderGraphTab(stats) {
       const tab = document.getElementById("tab-graph");
-
-      // Sort licenses by count desc
       const sortedLicenses = [...stats.licenses.entries()].sort((a, b) => b[1] - a[1]);
       const licRows = sortedLicenses.map(([lic, count]) => {
         const cls = lic === "Unknown" || lic === "" ? "license-unknown"
@@ -435,40 +563,6 @@
           <dd><table class="license-table">${licRows}</table></dd>
         </dl>
       `;
-    }
-
-    // --- Pan & Zoom ---
-    function setupPanZoom(container) {
-      let scale = 1, tx = 0, ty = 0, dragging = false, lastX, lastY;
-
-      function applyTransform() {
-        const el = container.querySelector(".mermaid-wrapper");
-        if (el) el.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
-      }
-
-      container.addEventListener("wheel", e => {
-        e.preventDefault();
-        const factor = e.deltaY > 0 ? 0.9 : 1.1;
-        const rect = container.getBoundingClientRect();
-        const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-        tx = mx - factor * (mx - tx);
-        ty = my - factor * (my - ty);
-        scale *= factor;
-        applyTransform();
-      }, { passive: false });
-
-      container.addEventListener("mousedown", e => {
-        dragging = true; lastX = e.clientX; lastY = e.clientY;
-      });
-      window.addEventListener("mousemove", e => {
-        if (!dragging) return;
-        tx += e.clientX - lastX; ty += e.clientY - lastY;
-        lastX = e.clientX; lastY = e.clientY;
-        applyTransform();
-      });
-      window.addEventListener("mouseup", () => { dragging = false; });
-
-      return { reset() { scale = 1; tx = 0; ty = 0; applyTransform(); } };
     }
 
     // --- Sidebar: Module tab ---
@@ -538,7 +632,6 @@
         </div>
       `;
 
-      // Switch to module tab
       switchTab("module");
     }
 
@@ -549,24 +642,8 @@
     }
 
     // --- UI wiring ---
-    const graphContainer = document.getElementById("graph-container");
-    const panZoom = setupPanZoom(graphContainer);
-
     document.querySelectorAll(".sidebar-tab").forEach(tab => {
       tab.addEventListener("click", () => switchTab(tab.dataset.tab));
-    });
-
-    let currentReverseIdMap = new Map();
-
-    graphContainer.addEventListener("click", e => {
-      // Mermaid wraps nodes in g.node elements with id like "flowchart-n0-123"
-      const nodeGroup = e.target.closest(".node");
-      if (!nodeGroup) return;
-      const nodeElId = nodeGroup.id || "";
-      const match = nodeElId.match(/flowchart-(n\d+)/);
-      if (!match) return;
-      const originalId = currentReverseIdMap.get(match[1]);
-      if (originalId) showModule(originalId);
     });
 
     const statusEl = document.getElementById("status");
@@ -611,14 +688,9 @@
         const graph = await buildGraph(deps, projectName, maxDepth, showStatus);
 
         showStatus("Rendering graph...");
-        const { definition, reverseIdMap } = generateMermaid(graph);
-        currentReverseIdMap = reverseIdMap;
-
-        // Mermaid.render needs a unique ID for a detached element
-        const tempId = "mermaid-" + Date.now();
-        const { svg: svgMarkup } = await mermaid.render(tempId, definition);
-        graphContainer.innerHTML = `<div class="mermaid-wrapper">${svgMarkup}</div>`;
-        panZoom.reset();
+        if (cy) cy.destroy();
+        renderGraph(graph);
+        document.getElementById("zoom-controls").classList.add("active");
 
         const stats = computeStats(graph);
         renderStatsBar(stats);
