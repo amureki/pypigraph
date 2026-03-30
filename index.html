@@ -7,6 +7,10 @@
   <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/webcola@3.4.0/WebCola/cola.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-cola@2.5.1/cytoscape-cola.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/elkjs@0.9.3/lib/elk.bundled.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-elk@2.2.0/dist/cytoscape-elk.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -199,6 +203,16 @@
       justify-content: center;
     }
     #zoom-controls button:hover { background: #f0f0f0; }
+    #layout-select {
+      width: 28px;
+      width: fit-content;
+      padding: 0.2rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      background: #fff;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -247,12 +261,21 @@
         <button id="zoom-fit" title="Fit all">Fit</button>
         <button id="zoom-reset" title="1:1">1:1</button>
         <button id="re-layout" title="Re-layout">↻</button>
+        <select id="layout-select" title="Layout">
+          <option value="elk">ELK</option>
+          <option value="dagre">Tree</option>
+          <option value="cola">Cola</option>
+        </select>
       </div>
     </div>
   </div>
 
   <script type="module">
     import { parse } from "https://cdn.jsdelivr.net/npm/smol-toml@1.3.1/+esm";
+
+    // Register layout extensions (globals from UMD scripts)
+    if (window.cytoscapeCola) cytoscape.use(window.cytoscapeCola);
+    if (window.cytoscapeElk) cytoscape.use(window.cytoscapeElk);
 
     const ROOT_ID = "__root__";
 
@@ -582,15 +605,7 @@
             style: { opacity: 0.05 },
           },
         ],
-        layout: {
-          name: "dagre",
-          rankDir: "TB",
-          align: "UL",
-          ranker: "tight-tree",
-          nodeSep: 50,
-          rankSep: 120,
-          edgeSep: 20,
-        },
+        layout: layouts[currentLayout],
         minZoom: 0.1,
         maxZoom: 3,
         wheelSensitivity: 0.3,
@@ -619,8 +634,20 @@
     document.getElementById("zoom-out").addEventListener("click", () => { if (cy) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
     document.getElementById("zoom-fit").addEventListener("click", () => { if (cy) cy.fit(undefined, 30); });
     document.getElementById("zoom-reset").addEventListener("click", () => { if (cy) { cy.zoom(1); cy.center(); } });
+    const layouts = {
+      elk: { name: "elk", elkConstructor: window.ELK, elk: { algorithm: "layered", "elk.direction": "DOWN", "elk.spacing.nodeNode": "50", "elk.layered.spacing.nodeNodeBetweenLayers": "120" }, fit: true, padding: 30 },
+      dagre: { name: "dagre", rankDir: "TB", align: "UL", ranker: "tight-tree", nodeSep: 50, rankSep: 120, edgeSep: 20, animate: false, fit: true, padding: 30 },
+      cola: { name: "cola", nodeSpacing: 40, edgeLength: 150, animate: false, fit: true, padding: 30, infinite: false, maxSimulationTime: 4000 },
+    };
+    let currentLayout = "elk";
+
     document.getElementById("re-layout").addEventListener("click", () => {
-      if (cy) cy.layout({ name: "dagre", rankDir: "TB", align: "UL", ranker: "tight-tree", nodeSep: 50, rankSep: 120, edgeSep: 20, animate: true, animationDuration: 300 }).run();
+      if (cy) cy.layout(layouts[currentLayout]).run();
+    });
+    document.getElementById("layout-select").addEventListener("change", (e) => {
+      if (!cy) return;
+      currentLayout = e.target.value;
+      cy.layout(layouts[currentLayout]).run();
     });
 
     function highlightConnections(node) {
