@@ -534,17 +534,12 @@
       return "#f59e0b";                                   // other — amber
     }
 
+    let cachedMaxSize = 0;
+
     function colorBySize(node) {
       if (node.depth === 0 || !node.size) return "#94a3b8";
-      // compute max size from current graph
-      let maxSize = 0;
-      if (lastGraph) {
-        for (const [id, n] of lastGraph.nodes) {
-          if (n && id !== ROOT_ID && n.size > maxSize) maxSize = n.size;
-        }
-      }
-      if (maxSize === 0) return "#94a3b8";
-      const ratio = node.size / maxSize;
+      if (cachedMaxSize === 0) return "#94a3b8";
+      const ratio = node.size / cachedMaxSize;
       if (ratio < 0.1) return "#22c55e";      // small — green
       if (ratio < 0.3) return "#84cc16";      // moderate — lime
       if (ratio < 0.6) return "#f59e0b";      // large — amber
@@ -584,17 +579,17 @@
       for (const [id, node] of graph.nodes) {
         if (!node) continue;
         const count = dependedBy.get(id) || 0;
-        const countLabel = count > 1 ? ` (${count})` : "";
         const dateLabel = node.releaseDate ? `\n${node.releaseDate}` : "";
         const sizeLabel = node.size ? `\n${formatSize(node.size)}` : "";
         const versionLabel = node.pinnedBehind ? node.specifier : (node.version || "");
         const nameVersion = versionLabel ? `${node.name}@${versionLabel}` : node.name;
-        const labelParts = `${escapeDot(nameVersion)}${escapeDot(countLabel)}${dateLabel}${sizeLabel}`;
+        const labelParts = `${escapeDot(nameVersion)}${dateLabel}${sizeLabel}`;
         const color = colorFn(node);
         const penwidth = node.depth === 0 ? 3 : count > 3 ? 2.5 : 1.5;
         const fontsize = node.depth === 0 ? 12 : node.depth > 2 ? 9 : node.depth > 1 ? 10 : 11;
         const style = node.error ? "rounded,filled,dashed" : "rounded,filled";
-        const tooltip = escapeDot(node.summary || node.name);
+        const tooltipParts = [node.summary || node.name, count > 0 ? `Used by ${count} package${count > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
+        const tooltip = escapeDot(tooltipParts);
 
         lines.push(`  "${escapeDot(id)}" [label="${labelParts}", fillcolor="${color}20", color="${node.error ? "#dc2626" : color}", penwidth=${penwidth}, fontsize=${fontsize}, style="${style}", tooltip="${tooltip}", id="${escapeDot(id)}"];`);
       }
@@ -611,6 +606,7 @@
     // --- SVG pan/zoom ---
     const svgState = { scale: 1, panX: 0, panY: 0, didDrag: false };
     let panZoomCleanup = null;
+    let graphClickCleanup = null;
 
     function applyTransform() {
       const svg = document.getElementById("graph-container").querySelector("svg");
@@ -725,7 +721,7 @@
       svgState.scale = Math.min(cw / sw, ch / sh) * 0.95;
       svgState.panX = (cw - sw * svgState.scale) / 2;
       svgState.panY = (ch - sh * svgState.scale) / 2;
-      svg.style.transform = `translate(${svgState.panX}px, ${svgState.panY}px) scale(${svgState.scale})`;
+      applyTransform();
     }
 
     // --- Graphviz rendering ---
@@ -760,103 +756,93 @@
         if (title) nodesByTitle.set(title.textContent.trim(), el);
       });
 
-      // Build lookup: edge title → SVG element, and adjacency from graph data
+      // Build lookup: edge title → SVG element
       const edgesByKey = new Map();
       container.querySelectorAll(".edge").forEach(el => {
         const title = el.querySelector("title");
         if (title) edgesByKey.set(title.textContent.trim(), el);
       });
 
+      // Build adjacency maps once for O(1) neighbor lookup
+      const children = new Map();  // from → [to]
+      const parents = new Map();   // to → [from]
+      for (const { from, to } of graph.edges) {
+        if (!children.has(from)) children.set(from, []);
+        children.get(from).push(to);
+        if (!parents.has(to)) parents.set(to, []);
+        parents.get(to).push(from);
+      }
+
       function getConnectedIds(nodeId) {
         const ids = new Set([nodeId]);
-        // Walk upstream (predecessors)
         const upQueue = [nodeId];
         while (upQueue.length) {
           const cur = upQueue.shift();
-          for (const { from, to } of graph.edges) {
-            if (to === cur && !ids.has(from)) {
-              ids.add(from);
-              upQueue.push(from);
-            }
+          for (const p of parents.get(cur) || []) {
+            if (!ids.has(p)) { ids.add(p); upQueue.push(p); }
           }
         }
-        // Walk downstream (successors)
         const downQueue = [nodeId];
         while (downQueue.length) {
           const cur = downQueue.shift();
-          for (const { from, to } of graph.edges) {
-            if (from === cur && !ids.has(to)) {
-              ids.add(to);
-              downQueue.push(to);
-            }
+          for (const c of children.get(cur) || []) {
+            if (!ids.has(c)) { ids.add(c); downQueue.push(c); }
           }
         }
         return ids;
       }
 
+      function setEdgeColor(el, color) {
+        el.querySelectorAll("path, polygon").forEach(p => p.setAttribute("stroke", color));
+        el.querySelectorAll("polygon").forEach(p => p.setAttribute("fill", color));
+      }
+
+      // Cache node/edge element lists for highlight operations
+      const allNodeEls = container.querySelectorAll(".node");
+      const allEdgeEls = container.querySelectorAll(".edge");
+
       function highlightNode(nodeId) {
         const connectedIds = getConnectedIds(nodeId);
 
-        // Dim all
-        container.querySelectorAll(".node").forEach(el => el.style.opacity = "0.15");
-        container.querySelectorAll(".edge").forEach(el => el.style.opacity = "0.05");
+        allNodeEls.forEach(el => el.style.opacity = "0.15");
+        allEdgeEls.forEach(el => el.style.opacity = "0.05");
 
-        // Highlight connected nodes
         for (const id of connectedIds) {
           const el = nodesByTitle.get(id);
           if (el) el.style.opacity = "1";
         }
 
-        // Highlight edges between connected nodes
         for (const { from, to } of graph.edges) {
           if (connectedIds.has(from) && connectedIds.has(to)) {
-            const key = `${from}->${to}`;
-            const el = edgesByKey.get(key);
-            if (el) {
-              el.style.opacity = "1";
-              // Color highlighted edges
-              el.querySelectorAll("path, polygon").forEach(p => {
-                p.setAttribute("stroke", "#2563eb");
-              });
-              el.querySelectorAll("polygon").forEach(p => {
-                p.setAttribute("fill", "#2563eb");
-              });
-            }
+            const el = edgesByKey.get(`${from}->${to}`);
+            if (el) { el.style.opacity = "1"; setEdgeColor(el, "#2563eb"); }
           }
         }
       }
 
       function clearHighlight() {
-        container.querySelectorAll(".node").forEach(n => n.style.opacity = "");
-        container.querySelectorAll(".edge").forEach(el => {
-          el.style.opacity = "";
-          el.querySelectorAll("path, polygon").forEach(p => {
-            p.setAttribute("stroke", "#6e7781");
-          });
-          el.querySelectorAll("polygon").forEach(p => {
-            p.setAttribute("fill", "#6e7781");
-          });
-        });
+        allNodeEls.forEach(n => n.style.opacity = "");
+        allEdgeEls.forEach(el => { el.style.opacity = ""; setEdgeColor(el, "#6e7781"); });
       }
 
-      // Click node → highlight + show module
-      container.querySelectorAll(".node").forEach(nodeEl => {
-        nodeEl.addEventListener("click", (e) => {
-          e.stopPropagation();
+      // Event delegation for node clicks — use graphCleanup so re-renders don't stack listeners
+      if (graphClickCleanup) graphClickCleanup();
+      const clickAc = new AbortController();
+      container.addEventListener("click", (e) => {
+        if (svgState.didDrag) return;
+        const nodeEl = e.target.closest(".node");
+        if (nodeEl) {
           const title = nodeEl.querySelector("title");
           if (title) {
             const nodeId = title.textContent.trim();
             highlightNode(nodeId);
             showModule(nodeId);
           }
-        });
-      });
-
-      // Click background → clear highlight (but not after dragging)
-      container.addEventListener("click", (e) => {
-        if (svgState.didDrag) return;
-        if (!e.target.closest(".node")) clearHighlight();
-      });
+        } else {
+          clearHighlight();
+        }
+      }, { signal: clickAc.signal });
+      graphClickCleanup = () => clickAc.abort();
     }
 
     // --- Zoom controls ---
@@ -879,7 +865,7 @@
       svgState.scale = 1;
       svgState.panX = (cw - sw) / 2;
       svgState.panY = (ch - sh) / 2;
-      svg.style.transform = `translate(${svgState.panX}px, ${svgState.panY}px) scale(1)`;
+      applyTransform();
     });
 
     document.getElementById("layout-select").addEventListener("change", (e) => {
@@ -888,8 +874,26 @@
     });
     document.getElementById("color-select").addEventListener("change", (e) => {
       currentColorMode = e.target.value;
-      if (lastGraph) renderGraph(lastGraph);
+      if (lastGraph) recolorGraph(lastGraph);
     });
+
+    function recolorGraph(graph) {
+      const container = document.getElementById("graph-container");
+      const colorFn = colorModes[currentColorMode];
+      container.querySelectorAll(".node").forEach(el => {
+        const title = el.querySelector("title");
+        if (!title) return;
+        const nodeId = title.textContent.trim();
+        const node = graph.nodes.get(nodeId);
+        if (!node) return;
+        const color = colorFn(node);
+        const borderColor = node.error ? "#dc2626" : color;
+        el.querySelectorAll("polygon, ellipse, path").forEach(shape => {
+          shape.setAttribute("fill", color + "20");
+          shape.setAttribute("stroke", borderColor);
+        });
+      });
+    }
 
     // --- Stats ---
     function computeStats(graph) {
@@ -1037,14 +1041,12 @@
     const statusEl = document.getElementById("status");
     const errorEl = document.getElementById("error");
 
-    function showStatus(msg) {
-      statusEl.textContent = msg;
-      statusEl.classList.toggle("active", !!msg);
+    function showMsg(el, msg) {
+      el.textContent = msg;
+      el.classList.toggle("active", !!msg);
     }
-    function showError(msg) {
-      errorEl.textContent = msg;
-      errorEl.classList.toggle("active", !!msg);
-    }
+    function showStatus(msg) { showMsg(statusEl, msg); }
+    function showError(msg) { showMsg(errorEl, msg); }
 
     async function getTomlInput() {
       const text = document.getElementById("toml-input").value.trim();
@@ -1076,6 +1078,11 @@
         const maxDepth = Infinity;
         const graph = await buildGraph(parsed.dependencies, parsed.name, maxDepth, showStatus);
         lastGraph = graph;
+
+        cachedMaxSize = 0;
+        for (const [id, n] of graph.nodes) {
+          if (n && id !== ROOT_ID && n.size > cachedMaxSize) cachedMaxSize = n.size;
+        }
 
         showStatus("Rendering graph...");
         renderGraph(graph);
