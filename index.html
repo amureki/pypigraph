@@ -129,6 +129,11 @@
     }
     #error.active { display: block; }
 
+    .examples { margin-top: 0.75rem; font-size: 0.7rem; color: #888; line-height: 1.6; }
+    .examples p { margin: 0; }
+    .examples a { color: #2563eb; cursor: pointer; text-decoration: none; }
+    .examples a:hover { text-decoration: underline; }
+
     /* Module tab */
     .module-empty { color: #999; font-size: 0.8rem; padding: 1rem 0; text-align: center; }
     .detail-row { padding: 0.35rem 0; border-bottom: 1px solid #f0f0f0; }
@@ -161,15 +166,19 @@
     .license-packages li:hover { text-decoration: underline; }
 
     /* Graph area */
-    #graph-container {
+    #graph-wrapper {
       flex: 1;
       overflow: hidden;
       position: relative;
     }
+    #graph-container {
+      width: 100%;
+      height: 100%;
+    }
     #zoom-controls {
       position: absolute;
       top: 0.5rem;
-      right: 0.5rem;
+      left: 0.5rem;
       display: none;
       flex-direction: column;
       gap: 2px;
@@ -216,6 +225,12 @@
         </div>
         <div id="status"></div>
         <div id="error"></div>
+        <div class="examples">
+          <p>For example:</p>
+          <p>A URL to a pyproject.toml: <a class="example-link" data-url="https://raw.githubusercontent.com/python/pythondotorg/refs/heads/main/pyproject.toml">pythondotorg</a></p>
+          <p>A package name: <a class="example-link" data-pkg="django">django</a></p>
+          <p>Multiple packages: <a class="example-link" data-toml="django&#10;celery&#10;requests">django, celery, requests</a></p>
+        </div>
       </div>
       <div id="tab-graph" class="tab-panel">
         <p class="module-empty">Build a graph first</p>
@@ -224,12 +239,14 @@
         <p class="module-empty">Click a package in the graph</p>
       </div>
     </aside>
-    <div id="graph-container">
+    <div id="graph-wrapper">
+      <div id="graph-container"></div>
       <div id="zoom-controls">
         <button id="zoom-in" title="Zoom in">+</button>
         <button id="zoom-out" title="Zoom out">&minus;</button>
         <button id="zoom-fit" title="Fit all">Fit</button>
         <button id="zoom-reset" title="1:1">1:1</button>
+        <button id="re-layout" title="Re-layout">↻</button>
       </div>
     </div>
   </div>
@@ -277,7 +294,7 @@
     }
 
     function errorPackage(name) {
-      return { name, version: "?", summary: "", license: "", size: 0, dependencies: [], error: true };
+      return { name, version: "?", summary: "", license: "", size: 0, releaseDate: "", dependencies: [], error: true };
     }
 
     // --- TOML parsing ---
@@ -311,6 +328,9 @@
           const sdist = urls.find(u => u.packagetype === "sdist");
           size = (wheel || sdist)?.size || 0;
 
+          const uploadTime = (wheel || sdist)?.upload_time_iso_8601 || "";
+          const releaseDate = uploadTime ? uploadTime.split("T")[0] : "";
+
           const licenseClassifier = (info.classifiers ?? []).find(c => c.startsWith("License ::"));
           let license = info.license_expression
             || (licenseClassifier ? licenseClassifier.split(" :: ").pop() : "")
@@ -324,6 +344,7 @@
             summary: info.summary || "",
             license,
             size,
+            releaseDate,
             projectUrls: info.project_urls || {},
             requiresPython: info.requires_python || "",
             dependencies: requires,
@@ -357,6 +378,46 @@
     }
     const limit = semaphore(8);
 
+    // --- PEP 440 version comparison (simplified) ---
+    function parseVersion(v) {
+      return v.replace(/\.?(dev|alpha|beta|rc|post|a|b|c)\d*/gi, "")
+        .split(".").map(Number);
+    }
+
+    function compareVersions(a, b) {
+      const pa = parseVersion(a), pb = parseVersion(b);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const diff = (pa[i] || 0) - (pb[i] || 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    }
+
+    function satisfiesSpec(version, specifier) {
+      if (!specifier) return true;
+      const parts = specifier.split(",").map(s => s.trim());
+      for (const part of parts) {
+        const m = part.match(/^(~=|==|!=|<=?|>=?|===)(.+)$/);
+        if (!m) continue;
+        const [, op, target] = m;
+        const cmp = compareVersions(version, target);
+        if (op === ">=" && cmp < 0) return false;
+        if (op === ">" && cmp <= 0) return false;
+        if (op === "<=" && cmp > 0) return false;
+        if (op === "<" && cmp >= 0) return false;
+        if (op === "==" && cmp !== 0) return false;
+        if (op === "!=" && cmp === 0) return false;
+        if (op === "~=") {
+          if (cmp < 0) return false;
+          const tv = parseVersion(target);
+          tv[tv.length - 2] = (tv[tv.length - 2] || 0) + 1;
+          const upper = tv.map(String).join(".");
+          if (compareVersions(version, upper) >= 0) return false;
+        }
+      }
+      return true;
+    }
+
     // --- Graph builder ---
     let lastGraph = null;
 
@@ -374,7 +435,7 @@
         edges.push({ from, to });
       }
 
-      async function resolve(depName, parentKey, depth) {
+      async function resolve(depName, parentKey, depth, specifier) {
         if (depth > maxDepth) return;
         const key = normalizeName(depName);
         addEdge(parentKey, key);
@@ -383,15 +444,17 @@
 
         onProgress(`Fetching ${depName}... (${nodes.size - 1} packages)`);
         const info = await limit(() => fetchPackageInfo(key));
-        nodes.set(key, { ...info, depth });
+        const pinnedBehind = specifier && info.version && !info.error
+          ? !satisfiesSpec(info.version, specifier) : false;
+        nodes.set(key, { ...info, depth, specifier: specifier || "", pinnedBehind });
 
         await Promise.all(
-          info.dependencies.map(d => resolve(d.name, key, depth + 1))
+          info.dependencies.map(d => resolve(d.name, key, depth + 1, d.specifier))
         );
       }
 
       await Promise.all(
-        rootDeps.map(d => resolve(d.name, ROOT_ID, 1))
+        rootDeps.map(d => resolve(d.name, ROOT_ID, 1, d.specifier))
       );
 
       return { nodes, edges };
@@ -414,14 +477,15 @@
         const count = dependedBy.get(id) || 0;
         const countLabel = count > 1 ? ` (${count})` : "";
         const sizeLabel = node.size ? `\n${formatSize(node.size)}` : "";
+        const dateLabel = node.releaseDate ? ` · ${node.releaseDate}` : "";
         const nameVersion = node.version ? `${node.name}@${node.version}` : node.name;
-        const color = depthColors[Math.min(node.depth, depthColors.length - 1)];
+        const color = node.pinnedBehind ? "#d97706" : depthColors[Math.min(node.depth, depthColors.length - 1)];
 
         elements.push({
           group: "nodes",
           data: {
             id,
-            label: `${nameVersion}${countLabel}${sizeLabel}`,
+            label: `${nameVersion}${countLabel}${dateLabel}${sizeLabel}`,
             depth: node.depth,
             color,
             borderColor: node.error ? "#dc2626" : color,
@@ -447,14 +511,16 @@
               label: "data(label)",
               "text-valign": "center",
               "text-halign": "center",
-              "font-size": "9px",
+              "font-size": "11px",
               "font-family": "system-ui, -apple-system, sans-serif",
               "text-wrap": "wrap",
               "text-max-width": "140px",
               shape: "roundrectangle",
               width: "label",
               height: "label",
-              padding: "6px",
+              padding: "8px",
+              "min-width": "80px",
+              "min-height": "30px",
               "background-color": "data(color)",
               "background-opacity": 0.12,
               "border-color": "data(borderColor)",
@@ -463,22 +529,39 @@
             },
           },
           {
+            selector: "node[depth > 1]",
+            style: {
+              "font-size": "10px",
+              opacity: 0.8,
+            },
+          },
+          {
+            selector: "node[depth > 2]",
+            style: {
+              "font-size": "9px",
+              opacity: 0.6,
+            },
+          },
+          {
             selector: "node:selected",
             style: {
               "background-opacity": 0.3,
               "border-width": 3,
               "border-color": "#2563eb",
+              opacity: 1,
             },
           },
           {
             selector: "edge",
             style: {
-              width: 1,
-              "line-color": "#ccc",
-              "target-arrow-color": "#bbb",
+              width: 1.5,
+              "line-color": "#6e7781",
+              "target-arrow-color": "#6e7781",
               "target-arrow-shape": "triangle",
-              "arrow-scale": 0.6,
+              "arrow-scale": 0.7,
               "curve-style": "bezier",
+              opacity: 0.5,
+              "line-cap": "round",
             },
           },
           {
@@ -487,27 +570,32 @@
               "line-color": "#2563eb",
               "target-arrow-color": "#2563eb",
               width: 2,
+              opacity: 1,
             },
           },
           {
             selector: "node.dimmed",
-            style: { opacity: 0.2 },
+            style: { opacity: 0.15 },
           },
           {
             selector: "edge.dimmed",
-            style: { opacity: 0.1 },
+            style: { opacity: 0.05 },
           },
         ],
         layout: {
           name: "dagre",
-          rankDir: "LR",
-          nodeSep: 30,
-          rankSep: 60,
-          edgeSep: 10,
+          rankDir: "TB",
+          align: "UL",
+          ranker: "tight-tree",
+          nodeSep: 50,
+          rankSep: 120,
+          edgeSep: 20,
         },
         minZoom: 0.1,
         maxZoom: 3,
         wheelSensitivity: 0.3,
+        textureOnViewport: true,
+        hideEdgesOnViewport: true,
       });
 
       // Click node → show sidebar + highlight connections
@@ -531,6 +619,9 @@
     document.getElementById("zoom-out").addEventListener("click", () => { if (cy) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
     document.getElementById("zoom-fit").addEventListener("click", () => { if (cy) cy.fit(undefined, 30); });
     document.getElementById("zoom-reset").addEventListener("click", () => { if (cy) { cy.zoom(1); cy.center(); } });
+    document.getElementById("re-layout").addEventListener("click", () => {
+      if (cy) cy.layout({ name: "dagre", rankDir: "TB", align: "UL", ranker: "tight-tree", nodeSep: 50, rankSep: 120, edgeSep: 20, animate: true, animationDuration: 300 }).run();
+    });
 
     function highlightConnections(node) {
       cy.elements().addClass("dimmed");
@@ -597,10 +688,6 @@
 
       tab.innerHTML = `
         <dl class="graph-stats">
-          <dt>Direct dependencies</dt><dd>${stats.direct}</dd>
-          <dt>Transitive dependencies</dt><dd>${stats.transitive}</dd>
-          <dt>Total packages</dt><dd>${stats.direct + stats.transitive}</dd>
-          <dt>Total download size</dt><dd>${formatSize(stats.totalSize)}</dd>
           ${stats.errors > 0 ? `<dt>Fetch errors</dt><dd style="color:#dc2626">${stats.errors}</dd>` : ""}
           <dt>Licenses (${stats.licenses.size} unique)</dt>
           <dd><table class="license-table">${licRows}</table></dd>
@@ -656,9 +743,14 @@
         ? '<p style="color:#999;margin-top:0.5rem;">No dependencies</p>'
         : `<ul class="dep-list">${deps.map(d => `<li>${escapeHtml(d.raw)}</li>`).join("")}</ul>`;
 
+      const versionHtml = node.pinnedBehind
+        ? `${escapeHtml(node.version || "?")} <span style="color:#d97706;font-size:0.7rem;">(latest excluded by ${escapeHtml(node.specifier)})</span>`
+        : escapeHtml(node.version || "?");
+
       const rows = [
         detailRow("Package", `<b>${escapeHtml(node.name)}</b>`),
-        detailRow("Version", escapeHtml(node.version || "?")),
+        detailRow("Version", versionHtml),
+        node.releaseDate ? detailRow("Released", escapeHtml(node.releaseDate)) : "",
         detailRow("Summary", escapeHtml(node.summary || "-")),
         detailRow("License", escapeHtml(node.license || "Unknown"), classifyLicense(node.license)),
         detailRow("Size", formatSize(node.size)),
@@ -712,7 +804,7 @@
       throw new Error("Paste pyproject.toml contents or provide a URL");
     }
 
-    document.getElementById("go-btn").addEventListener("click", async () => {
+    async function runBuild() {
       const goBtn = document.getElementById("go-btn");
       showError("");
       goBtn.disabled = true;
@@ -742,6 +834,27 @@
       } finally {
         goBtn.disabled = false;
       }
+    }
+
+    document.getElementById("go-btn").addEventListener("click", runBuild);
+
+    document.querySelectorAll(".example-link").forEach(link => {
+      link.addEventListener("click", () => {
+        const tomlInput = document.getElementById("toml-input");
+        const urlInput = document.getElementById("url-input");
+        tomlInput.value = "";
+        urlInput.value = "";
+
+        if (link.dataset.url) {
+          urlInput.value = link.dataset.url;
+        } else if (link.dataset.pkg) {
+          tomlInput.value = `[project]\nname = "example"\ndependencies = ["${link.dataset.pkg}"]`;
+        } else if (link.dataset.toml) {
+          const pkgs = link.dataset.toml.split("\n").map(p => `"${p.trim()}"`).join(", ");
+          tomlInput.value = `[project]\nname = "example"\ndependencies = [${pkgs}]`;
+        }
+        runBuild();
+      });
     });
   </script>
 </body>
