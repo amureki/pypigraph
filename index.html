@@ -13,6 +13,9 @@
   <meta name="twitter:title" content="pypigraph">
   <meta name="twitter:description" content="Visualize Python package dependency graphs from pyproject.toml.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='8' cy='8' r='3' fill='%232563eb'/><circle cx='24' cy='8' r='3' fill='%2322c55e'/><circle cx='16' cy='24' r='3' fill='%23f59e0b'/><line x1='8' y1='8' x2='24' y2='8' stroke='%236e7781' stroke-width='1.5'/><line x1='8' y1='8' x2='16' y2='24' stroke='%236e7781' stroke-width='1.5'/><line x1='24' y1='8' x2='16' y2='24' stroke='%236e7781' stroke-width='1.5'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
     /* --- Theme variables --- */
     :root {
@@ -83,7 +86,7 @@
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: "DM Sans", system-ui, -apple-system, sans-serif;
       background: var(--bg);
       color: var(--text);
       display: flex;
@@ -98,7 +101,7 @@
       align-items: center;
       gap: 0.75rem;
     }
-    header h1 { font-size: 1rem; font-weight: 600; white-space: nowrap; }
+    header h1 { font-size: 1rem; font-weight: 700; white-space: nowrap; letter-spacing: -0.02em; }
     #header-context { font-weight: 400; color: var(--text-muted); }
     #stats-bar {
       font-size: 0.7rem;
@@ -149,13 +152,18 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
-      transition: margin-left 0.2s ease, opacity 0.2s ease;
+      transition: transform 0.2s ease, opacity 0.2s ease;
       flex-shrink: 0;
     }
     #sidebar.collapsed {
-      margin-left: -320px;
+      transform: translateX(-100%);
       opacity: 0;
       pointer-events: none;
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      z-index: -1;
     }
     #sidebar-toggle {
       border: none;
@@ -222,7 +230,7 @@
     #toml-input {
       width: 100%;
       height: 180px;
-      font-family: "SF Mono", "Fira Code", monospace;
+      font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
       font-size: 0.75rem;
       padding: 0.5rem;
       border: 1px solid var(--input-border);
@@ -296,7 +304,7 @@
     .detail-value a { color: var(--accent); text-decoration: none; }
     .detail-value a:hover { text-decoration: underline; }
     .dep-list { list-style: none; padding: 0; font-size: 0.75rem; }
-    .dep-list li { padding: 0.2rem 0; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.7rem; }
+    .dep-list li { padding: 0.2rem 0; font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace; font-size: 0.7rem; }
     .used-by-list { list-style: none; padding: 0; }
     .used-by-list li {
       display: inline-block;
@@ -307,7 +315,7 @@
       border-radius: 3px;
       font-size: 0.7rem;
       cursor: pointer;
-      font-family: "SF Mono", "Fira Code", monospace;
+      font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace;
     }
     .used-by-list li:hover { text-decoration: underline; }
     .license-ok { color: #16a34a; }
@@ -334,11 +342,11 @@
     .license-packages.active { display: table-row; }
     .license-packages td { padding: 0.3rem 0.5rem; background: var(--hover-bg); }
     .license-packages ul { list-style: none; padding: 0; margin: 0; }
-    .license-packages li { padding: 0.15rem 0; font-family: "SF Mono", "Fira Code", monospace; font-size: 0.7rem; cursor: pointer; color: var(--accent); }
+    .license-packages li { padding: 0.15rem 0; font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace; font-size: 0.7rem; cursor: pointer; color: var(--accent); }
     .license-packages li:hover { text-decoration: underline; }
     .top-list { list-style: none; padding: 0; margin-top: 0.15rem; }
     .top-list li { display: flex; justify-content: space-between; font-size: 0.7rem; padding: 0.1rem 0; }
-    .top-list .pkg-name { font-family: "SF Mono", "Fira Code", monospace; color: var(--accent); cursor: pointer; }
+    .top-list .pkg-name { font-family: "JetBrains Mono", "SF Mono", "Fira Code", monospace; color: var(--accent); cursor: pointer; }
     .top-list .pkg-name:hover { text-decoration: underline; }
     .top-list .pkg-size { color: var(--text-faint); }
 
@@ -371,12 +379,28 @@
       color: var(--text-faint);
       text-align: center;
       padding: 2rem;
-      gap: 0.5rem;
+      gap: 0.75rem;
     }
     #empty-state.hidden { display: none; }
-    #empty-state h2 { font-size: 1.5rem; font-weight: 700; color: var(--text); }
-    #empty-state p { font-size: 0.85rem; max-width: 400px; line-height: 1.5; }
-    #empty-state .empty-hint { font-size: 0.75rem; margin-top: 0.5rem; }
+    #empty-state .empty-motif {
+      width: 120px;
+      height: 120px;
+      opacity: 0.18;
+      margin-bottom: 0.5rem;
+      animation: empty-fade-in 0.8s ease-out;
+    }
+    #empty-state h2 { font-size: 1.5rem; font-weight: 700; color: var(--text); letter-spacing: -0.03em; animation: empty-fade-in 0.6s ease-out; }
+    #empty-state p { font-size: 0.85rem; max-width: 400px; line-height: 1.5; animation: empty-fade-in 0.6s 0.1s ease-out both; }
+    #empty-state .empty-hint { font-size: 0.75rem; margin-top: 0.25rem; animation: empty-fade-in 0.6s 0.2s ease-out both; }
+    @keyframes empty-fade-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    #empty-state .empty-motif { animation: empty-motif-in 1s ease-out; }
+    @keyframes empty-motif-in {
+      from { opacity: 0; transform: scale(0.85); }
+      to { opacity: 0.18; transform: scale(1); }
+    }
 
     /* Search */
     #graph-search {
@@ -408,38 +432,67 @@
 
     #zoom-controls {
       position: absolute;
-      top: 0.5rem;
-      left: 0.5rem;
+      bottom: 0.75rem;
+      left: 50%;
+      transform: translateX(-50%);
       display: none;
-      flex-direction: column;
-      gap: 2px;
+      align-items: center;
+      gap: 0;
       z-index: 10;
+      background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.2rem 0.25rem;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    [data-theme="dark"] #zoom-controls { box-shadow: 0 2px 12px rgba(0,0,0,0.3); }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) #zoom-controls { box-shadow: 0 2px 12px rgba(0,0,0,0.3); }
     }
     #zoom-controls.active { display: flex; }
     #zoom-controls button {
-      width: 28px;
-      height: 28px;
-      border: 1px solid var(--input-border);
-      background: var(--bg-surface);
-      border-radius: 4px;
+      width: 30px;
+      height: 30px;
+      border: none;
+      background: none;
+      border-radius: 7px;
       cursor: pointer;
       font-size: 0.8rem;
       color: var(--text-muted);
       display: flex;
       align-items: center;
       justify-content: center;
+      transition: background 0.15s, color 0.15s;
     }
-    #zoom-controls button:hover { background: var(--hover-bg); }
+    #zoom-controls button:hover { background: var(--hover-bg); color: var(--text); }
+    .toolbar-sep {
+      width: 1px;
+      height: 18px;
+      background: var(--border);
+      margin: 0 0.15rem;
+      flex-shrink: 0;
+    }
     #layout-select, #color-select {
       width: fit-content;
-      padding: 0.2rem;
-      border: 1px solid var(--input-border);
-      border-radius: 4px;
+      padding: 0.25rem 0.35rem;
+      border: none;
+      border-radius: 7px;
       font-size: 0.7rem;
-      background: var(--bg-surface);
-      color: var(--text);
+      font-family: "DM Sans", system-ui, sans-serif;
+      background: none;
+      color: var(--text-muted);
       cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 5 5-5z' fill='%23888'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0.25rem center;
+      padding-right: 1.1rem;
     }
+    #layout-select:hover, #color-select:hover { background-color: var(--hover-bg); color: var(--text); }
 
     /* Mobile hamburger */
     #mobile-sidebar-toggle {
@@ -480,6 +533,8 @@
       #sidebar.collapsed { margin-left: 0; transform: translateX(-100%); opacity: 1; }
       #sidebar-overlay.active { display: block; }
       #graph-search input { width: 140px; }
+      #zoom-controls { bottom: 0.5rem; padding: 0.15rem 0.2rem; border-radius: 8px; max-width: calc(100vw - 1rem); }
+      #zoom-controls button { width: 28px; height: 28px; font-size: 0.75rem; }
     }
   </style>
 </head>
@@ -540,9 +595,24 @@
     <div id="graph-wrapper">
       <button id="sidebar-show" aria-label="Show sidebar">show sidebar &#9656;</button>
       <div id="empty-state">
+        <svg class="empty-motif" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <line x1="30" y1="30" x2="90" y2="30" stroke="currentColor" stroke-width="2"/>
+          <line x1="30" y1="30" x2="60" y2="95" stroke="currentColor" stroke-width="2"/>
+          <line x1="90" y1="30" x2="60" y2="95" stroke="currentColor" stroke-width="2"/>
+          <line x1="60" y1="95" x2="20" y2="75" stroke="currentColor" stroke-width="1.5" opacity="0.5"/>
+          <line x1="60" y1="95" x2="100" y2="75" stroke="currentColor" stroke-width="1.5" opacity="0.5"/>
+          <line x1="30" y1="30" x2="15" y2="55" stroke="currentColor" stroke-width="1.5" opacity="0.5"/>
+          <line x1="90" y1="30" x2="105" y2="55" stroke="currentColor" stroke-width="1.5" opacity="0.5"/>
+          <circle cx="30" cy="30" r="8" fill="#2563eb" opacity="0.8"/>
+          <circle cx="90" cy="30" r="8" fill="#22c55e" opacity="0.8"/>
+          <circle cx="60" cy="95" r="8" fill="#f59e0b" opacity="0.8"/>
+          <circle cx="20" cy="75" r="5" fill="#a855f7" opacity="0.6"/>
+          <circle cx="100" cy="75" r="5" fill="#ec4899" opacity="0.6"/>
+          <circle cx="15" cy="55" r="4" fill="#3b82f6" opacity="0.5"/>
+          <circle cx="105" cy="55" r="4" fill="#84cc16" opacity="0.5"/>
+        </svg>
         <h2>pypigraph</h2>
-        <p>Visualize Python package dependency graphs. Paste a pyproject.toml, enter a URL, or type a package name.</p>
-        <span class="empty-hint">Try one of the examples in the sidebar to get started.</span>
+        <p>Visualize Python package dependency graphs</p>
       </div>
       <div id="graph-container"></div>
       <div id="graph-search">
@@ -554,15 +624,17 @@
         <button id="zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
         <button id="zoom-fit" title="Fit all" aria-label="Fit graph to view">Fit</button>
         <button id="zoom-reset" title="1:1" aria-label="Reset zoom to 100%">1:1</button>
+        <span class="toolbar-sep"></span>
         <select id="layout-select" title="Layout" aria-label="Graph layout">
-          <option value="dot">Layout: Tree</option>
-          <option value="twopi">Layout: Radial</option>
+          <option value="dot">Tree</option>
+          <option value="twopi">Radial</option>
         </select>
+        <span class="toolbar-sep"></span>
         <select id="color-select" title="Color by" aria-label="Color coding mode">
-          <option value="depth">Color: depth</option>
-          <option value="freshness">Color: freshness</option>
-          <option value="license">Color: license</option>
-          <option value="size">Color: size</option>
+          <option value="depth">Depth</option>
+          <option value="freshness">Freshness</option>
+          <option value="license">License</option>
+          <option value="size">Size</option>
         </select>
       </div>
     </div>
@@ -896,7 +968,7 @@
         !isDot ? `  overlap=prism;` : "",
         !isDot ? `  sep="+10";` : "",
         engine === "sfdp" ? `  K=1.2;` : "",
-        `  node [shape=box, style="rounded,filled", fontname="system-ui, sans-serif", fontsize=11, fontcolor="${fontColor}", margin="0.15,0.08"];`,
+        `  node [shape=box, style="rounded,filled", fontname="DM Sans, system-ui, sans-serif", fontsize=11, fontcolor="${fontColor}", margin="0.15,0.08"];`,
         `  edge [color="${isDarkMode() ? '#555' : '#6e7781'}", arrowsize=0.7, arrowhead=vee];`,
       ].filter(Boolean);
 
