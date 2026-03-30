@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>pypigraph</title>
   <meta name="description" content="Visualize Python package dependency graphs from pyproject.toml. Explore dependencies, licenses, freshness, and sizes.">
+  <meta property="og:title" content="pypigraph">
+  <meta property="og:description" content="Visualize Python package dependency graphs from pyproject.toml. Explore dependencies, licenses, freshness, and sizes.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://amureki.github.io/pypigraph/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="pypigraph">
+  <meta name="twitter:description" content="Visualize Python package dependency graphs from pyproject.toml.">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='8' cy='8' r='3' fill='%232563eb'/><circle cx='24' cy='8' r='3' fill='%2322c55e'/><circle cx='16' cy='24' r='3' fill='%23f59e0b'/><line x1='8' y1='8' x2='24' y2='8' stroke='%236e7781' stroke-width='1.5'/><line x1='8' y1='8' x2='16' y2='24' stroke='%236e7781' stroke-width='1.5'/><line x1='24' y1='8' x2='16' y2='24' stroke='%236e7781' stroke-width='1.5'/></svg>">
   <style>
     /* --- Theme variables --- */
@@ -1661,8 +1668,11 @@
         updateInputHint();
         runBuild();
       } else if (params.has("pkg")) {
-        const pkgs = params.getAll("pkg");
-        const deps = pkgs.map(p => `"${p.trim()}"`).join(", ");
+        const pkgs = params.getAll("pkg")
+          .map(p => p.trim())
+          .filter(p => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(p));
+        if (pkgs.length === 0) return;
+        const deps = pkgs.map(p => `"${p}"`).join(", ");
         tomlInput.value = `[project]\nname = "example"\ndependencies = [${deps}]`;
         updateInputHint();
         runBuild();
