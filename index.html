@@ -156,7 +156,8 @@
       cursor: grab;
     }
     #graph-container:active { cursor: grabbing; }
-    #graph-container svg { position: absolute; transform-origin: 0 0; }
+    .mermaid-wrapper { transform-origin: 0 0; display: inline-block; }
+    .mermaid-wrapper svg { max-width: none !important; height: auto !important; }
     #graph-container .node { cursor: pointer; }
   </style>
 </head>
@@ -197,9 +198,9 @@
 
   <script type="module">
     import { parse } from "https://cdn.jsdelivr.net/npm/smol-toml@1.3.1/+esm";
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/+esm";
 
-    const vizPromise = import("https://cdn.jsdelivr.net/npm/@viz-js/viz@3.11.0/+esm")
-      .then(m => m.instance());
+    mermaid.initialize({ startOnLoad: false, theme: "default", flowchart: { curve: "basis", padding: 10 }, securityLevel: "loose" });
 
     // --- PEP 508 parsing ---
     function parsePep508(raw) {
@@ -339,44 +340,48 @@
       return graph;
     }
 
-    // --- DOT generation ---
-    function escDot(s) { return s.replace(/"/g, '\\"'); }
-
-    function generateDot(graph) {
-      const colors = ["#22c55e", "#3b82f6", "#f59e0b", "#a855f7"];
-
+    // --- Mermaid generation ---
+    // Mermaid node IDs must be alphanumeric; map normalized names to safe IDs
+    function generateMermaid(graph) {
       const dependedBy = new Map();
       for (const { to } of graph.edges) {
         dependedBy.set(to, (dependedBy.get(to) || 0) + 1);
       }
 
-      const lines = [
-        "digraph {",
-        '  rankdir=LR;',
-        '  node [shape=box style="rounded,filled" fontname="system-ui" fontsize=10 height=0 margin="0.06,0.04"];',
-        '  edge [color="#aaa" arrowsize=0.5];',
-      ];
+      const idMap = new Map();
+      let idx = 0;
+      function safeId(name) {
+        if (!idMap.has(name)) idMap.set(name, "n" + idx++);
+        return idMap.get(name);
+      }
+
+      const lines = ["graph LR"];
 
       for (const [id, node] of graph.nodes) {
         if (!node) continue;
-        const c = colors[Math.min(node.depth, colors.length - 1)];
         const count = dependedBy.get(id) || 0;
         const countLabel = count > 1 ? ` (${count})` : "";
-        const sizeLabel = node.size ? `\\n${formatSize(node.size)}` : "";
-        const nameVersion = node.version ? `${escDot(node.name)}@${escDot(node.version)}` : escDot(node.name);
+        const sizeLabel = node.size ? `<br/>${formatSize(node.size)}` : "";
+        const nameVersion = node.version ? `${node.name}@${node.version}` : node.name;
         const label = `${nameVersion}${countLabel}${sizeLabel}`;
-        const border = node.error ? "#dc2626" : c;
-        const fill = node.error ? "#fef2f233" : c + "22";
-        const pw = node.depth === 0 ? 2 : count > 3 ? 2 : 1;
-        lines.push(`  "${escDot(id)}" [label="${label}" fillcolor="${fill}" color="${border}" penwidth=${pw}];`);
+        const sid = safeId(id);
+        lines.push(`  ${sid}["${label}"]`);
       }
 
+      // Deduplicate edges
+      const edgeSet = new Set();
       for (const { from, to } of graph.edges) {
-        lines.push(`  "${escDot(from)}" -> "${escDot(to)}";`);
+        const key = `${from}→${to}`;
+        if (edgeSet.has(key)) continue;
+        edgeSet.add(key);
+        lines.push(`  ${safeId(from)} --> ${safeId(to)}`);
       }
 
-      lines.push("}");
-      return lines.join("\n");
+      // Store reverse map for click handling
+      const reverseIdMap = new Map();
+      for (const [name, sid] of idMap) reverseIdMap.set(sid, name);
+
+      return { definition: lines.join("\n"), reverseIdMap };
     }
 
     // --- Stats ---
@@ -437,8 +442,8 @@
       let scale = 1, tx = 0, ty = 0, dragging = false, lastX, lastY;
 
       function applyTransform() {
-        const svg = container.querySelector("svg");
-        if (svg) svg.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+        const el = container.querySelector(".mermaid-wrapper");
+        if (el) el.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
       }
 
       container.addEventListener("wheel", e => {
@@ -551,11 +556,17 @@
       tab.addEventListener("click", () => switchTab(tab.dataset.tab));
     });
 
+    let currentReverseIdMap = new Map();
+
     graphContainer.addEventListener("click", e => {
+      // Mermaid wraps nodes in g.node elements with id like "flowchart-n0-123"
       const nodeGroup = e.target.closest(".node");
       if (!nodeGroup) return;
-      const titleEl = nodeGroup.querySelector("title");
-      if (titleEl?.textContent) showModule(titleEl.textContent);
+      const nodeElId = nodeGroup.id || "";
+      const match = nodeElId.match(/flowchart-(n\d+)/);
+      if (!match) return;
+      const originalId = currentReverseIdMap.get(match[1]);
+      if (originalId) showModule(originalId);
     });
 
     const statusEl = document.getElementById("status");
@@ -600,12 +611,13 @@
         const graph = await buildGraph(deps, projectName, maxDepth, showStatus);
 
         showStatus("Rendering graph...");
-        const dot = generateDot(graph);
-        const viz = await vizPromise;
-        const svg = viz.renderSVGElement(dot);
+        const { definition, reverseIdMap } = generateMermaid(graph);
+        currentReverseIdMap = reverseIdMap;
 
-        graphContainer.innerHTML = "";
-        graphContainer.appendChild(svg);
+        // Mermaid.render needs a unique ID for a detached element
+        const tempId = "mermaid-" + Date.now();
+        const { svg: svgMarkup } = await mermaid.render(tempId, definition);
+        graphContainer.innerHTML = `<div class="mermaid-wrapper">${svgMarkup}</div>`;
         panZoom.reset();
 
         const stats = computeStats(graph);
