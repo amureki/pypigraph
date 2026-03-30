@@ -292,6 +292,11 @@ async function runBuild() {
     switchTab("graph");
 
     updateUrlState();
+
+    // Track build event in Umami
+    if (typeof umami !== "undefined") {
+      umami.track(props => ({ ...props, name: "build-graph", data: { project: displayName, packages: deps.length } }));
+    }
   } catch (e) {
     showError(e.message);
     showStatus("");
