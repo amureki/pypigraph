@@ -4,12 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>pypigraph</title>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/elkjs@0.9.3/lib/elk.bundled.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-elk@2.2.0/dist/cytoscape-elk.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -75,6 +69,18 @@
     .sidebar-tab:hover { background: #f5f5f5; }
     .tab-panel { display: none; padding: 0.75rem; overflow-y: auto; flex: 1; }
     .tab-panel.active { display: block; }
+    #sidebar-footer {
+      padding: 0.5rem 0.75rem;
+      border-top: 1px solid #e0e0e0;
+      font-size: 0.7rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+    #sidebar-footer a { color: #2563eb; text-decoration: none; }
+    #sidebar-footer a:hover { text-decoration: underline; }
+    #sidebar-footer .sep { color: #ccc; }
 
     /* Input tab */
     #toml-input {
@@ -177,7 +183,16 @@
     #graph-container {
       width: 100%;
       height: 100%;
+      overflow: hidden;
+      cursor: grab;
     }
+    #graph-container:active { cursor: grabbing; }
+    #graph-container svg {
+      transform-origin: 0 0;
+    }
+    #graph-container .node { cursor: pointer; }
+    #graph-container .node:hover polygon,
+    #graph-container .node:hover ellipse { stroke: #2563eb; stroke-width: 2; }
     #zoom-controls {
       position: absolute;
       top: 0.5rem;
@@ -202,8 +217,7 @@
       justify-content: center;
     }
     #zoom-controls button:hover { background: #f0f0f0; }
-    #layout-select {
-      width: 28px;
+    #layout-select, #color-select {
       width: fit-content;
       padding: 0.2rem;
       border: 1px solid #ccc;
@@ -230,10 +244,9 @@
         <textarea id="toml-input" placeholder="Paste pyproject.toml contents..."></textarea>
         <div class="input-group">
           <label>Or fetch from URL</label>
-          <input id="url-input" type="url" placeholder="https://raw.githubusercontent.com/...">
+          <input id="url-input" type="url" placeholder="https://github.com/user/repo/blob/main/pyproject.toml">
         </div>
         <div class="input-controls">
-          <label>Depth <input id="depth-input" type="number" min="1" max="10" value="2" style="width:3rem;padding:0.2rem;border:1px solid #ccc;border-radius:3px;font-size:0.75rem;"></label>
           <button id="go-btn">Build Graph</button>
         </div>
         <div id="status"></div>
@@ -251,6 +264,13 @@
       <div id="tab-module" class="tab-panel">
         <p class="module-empty">Click a package in the graph</p>
       </div>
+      <div id="sidebar-footer">
+        <span>by <a href="https://amureki.me" target="_blank">amureki</a></span>
+        <span class="sep">|</span>
+        <a href="https://github.com/amureki/pypigraph" target="_blank">GitHub</a>
+        <span class="sep">|</span>
+        <a href="https://github.com/sponsors/amureki" target="_blank">Sponsor</a>
+      </div>
     </aside>
     <div id="graph-wrapper">
       <div id="graph-container"></div>
@@ -260,8 +280,8 @@
         <button id="zoom-fit" title="Fit all">Fit</button>
         <button id="zoom-reset" title="1:1">1:1</button>
         <select id="layout-select" title="Layout">
-          <option value="elk">Layout: Tree</option>
-          <option value="fcose">Layout: fCoSE</option>
+          <option value="dot">Layout: Tree</option>
+          <option value="twopi">Layout: Radial</option>
         </select>
         <select id="color-select" title="Color by">
           <option value="depth">Color: depth</option>
@@ -275,10 +295,9 @@
 
   <script type="module">
     import { parse } from "https://cdn.jsdelivr.net/npm/smol-toml@1.3.1/+esm";
+    import { Graphviz } from "https://cdn.jsdelivr.net/npm/@hpcc-js/wasm-graphviz@1.21.2/+esm";
 
-    // Register layout extensions (globals from UMD scripts)
-    if (window.cytoscapeElk) cytoscape.use(window.cytoscapeElk);
-    if (window.cytoscapeFcose) cytoscape.use(window.cytoscapeFcose);
+    const graphviz = await Graphviz.load();
 
     const ROOT_ID = "__root__";
 
@@ -534,195 +553,286 @@
     const colorModes = { depth: colorByDepth, freshness: colorByFreshness, license: colorByLicense, size: colorBySize };
     let currentColorMode = "depth";
 
-    function recolorGraph() {
-      if (!cy || !lastGraph) return;
-      const colorFn = colorModes[currentColorMode];
-      for (const [id, node] of lastGraph.nodes) {
-        if (!node) continue;
-        const color = colorFn(node);
-        const cyNode = cy.getElementById(id);
-        if (cyNode.length) {
-          cyNode.data("color", color);
-          cyNode.data("borderColor", node.error ? "#dc2626" : color);
-        }
-      }
+    // --- DOT generation ---
+    function escapeDot(str) {
+      return str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     }
 
-    // --- Cytoscape rendering ---
-    let cy = null;
-
-    function renderGraph(graph) {
+    function graphToDot(graph, colorFn, engine) {
       const dependedBy = new Map();
       for (const { to } of graph.edges) {
         dependedBy.set(to, (dependedBy.get(to) || 0) + 1);
       }
 
-      const colorFn = colorModes[currentColorMode];
-      const elements = [];
+      const isDot = engine === "dot";
+      const lines = [
+        `digraph G {`,
+        `  rankdir=TB;`,
+        `  bgcolor="transparent";`,
+        `  ranksep=0.6;`,
+        `  nodesep=0.4;`,
+        `  splines=true;`,
+        isDot ? `  newrank=true;` : "",
+        !isDot ? `  overlap=prism;` : "",
+        !isDot ? `  sep="+10";` : "",
+        engine === "sfdp" ? `  K=1.2;` : "",
+        `  node [shape=box, style="rounded,filled", fontname="system-ui, sans-serif", fontsize=11, margin="0.15,0.08"];`,
+        `  edge [color="#6e7781", arrowsize=0.7, arrowhead=vee];`,
+      ].filter(Boolean);
 
       for (const [id, node] of graph.nodes) {
         if (!node) continue;
         const count = dependedBy.get(id) || 0;
         const countLabel = count > 1 ? ` (${count})` : "";
+        const dateLabel = node.releaseDate ? `\n${node.releaseDate}` : "";
         const sizeLabel = node.size ? `\n${formatSize(node.size)}` : "";
-        const dateLabel = node.releaseDate ? ` · ${node.releaseDate}` : "";
         const nameVersion = node.version ? `${node.name}@${node.version}` : node.name;
+        const labelParts = `${escapeDot(nameVersion)}${escapeDot(countLabel)}${dateLabel}${sizeLabel}`;
         const color = colorFn(node);
+        const penwidth = node.depth === 0 ? 3 : count > 3 ? 2.5 : 1.5;
+        const fontsize = node.depth === 0 ? 12 : node.depth > 2 ? 9 : node.depth > 1 ? 10 : 11;
+        const style = node.error ? "rounded,filled,dashed" : "rounded,filled";
+        const tooltip = escapeDot(node.summary || node.name);
 
-        elements.push({
-          group: "nodes",
-          data: {
-            id,
-            label: `${nameVersion}${countLabel}${dateLabel}${sizeLabel}`,
-            depth: node.depth,
-            color,
-            borderColor: node.error ? "#dc2626" : color,
-            borderWidth: node.depth === 0 ? 3 : count > 3 ? 2.5 : 1.5,
-          },
-        });
+        lines.push(`  "${escapeDot(id)}" [label="${labelParts}", fillcolor="${color}20", color="${node.error ? "#dc2626" : color}", penwidth=${penwidth}, fontsize=${fontsize}, style="${style}", tooltip="${tooltip}", id="${escapeDot(id)}"];`);
       }
 
       for (const { from, to } of graph.edges) {
-        elements.push({
-          group: "edges",
-          data: { source: from, target: to },
+        const weight = isDot && (dependedBy.get(to) || 0) > 3 ? 2 : 1;
+        lines.push(`  "${escapeDot(from)}" -> "${escapeDot(to)}"${weight > 1 ? ` [weight=${weight}]` : ""};`);
+      }
+
+      lines.push(`}`);
+      return lines.join("\n");
+    }
+
+    // --- SVG pan/zoom ---
+    let svgState = { scale: 1, panX: 0, panY: 0, dragging: false, startX: 0, startY: 0 };
+
+    function initPanZoom(container) {
+      svgState = { scale: 1, panX: 0, panY: 0, dragging: false, startX: 0, startY: 0 };
+      const svg = container.querySelector("svg");
+      if (!svg) return;
+
+      function applyTransform() {
+        svg.style.transform = `translate(${svgState.panX}px, ${svgState.panY}px) scale(${svgState.scale})`;
+      }
+
+      container.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const delta = -e.deltaY * (e.deltaMode === 1 ? 20 : 1);
+        const factor = Math.pow(1.002, delta);
+        const rect = container.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        svgState.panX = mx - (mx - svgState.panX) * factor;
+        svgState.panY = my - (my - svgState.panY) * factor;
+        svgState.scale *= factor;
+        applyTransform();
+      }, { passive: false });
+
+      container.addEventListener("mousedown", (e) => {
+        if (e.target.closest(".node")) return;
+        svgState.dragging = true;
+        svgState.startX = e.clientX - svgState.panX;
+        svgState.startY = e.clientY - svgState.panY;
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (!svgState.dragging) return;
+        svgState.panX = e.clientX - svgState.startX;
+        svgState.panY = e.clientY - svgState.startY;
+        applyTransform();
+      });
+      window.addEventListener("mouseup", () => { svgState.dragging = false; });
+
+      // Fit initially
+      fitGraph();
+    }
+
+    function fitGraph() {
+      const container = document.getElementById("graph-container");
+      const svg = container.querySelector("svg");
+      if (!svg) return;
+      const cw = container.clientWidth, ch = container.clientHeight;
+      const sw = parseFloat(svg.dataset.intrinsicWidth) || parseFloat(svg.style.width) || cw;
+      const sh = parseFloat(svg.dataset.intrinsicHeight) || parseFloat(svg.style.height) || ch;
+      svgState.scale = Math.min(cw / sw, ch / sh) * 0.95;
+      svgState.panX = (cw - sw * svgState.scale) / 2;
+      svgState.panY = (ch - sh * svgState.scale) / 2;
+      svg.style.transform = `translate(${svgState.panX}px, ${svgState.panY}px) scale(${svgState.scale})`;
+    }
+
+    // --- Graphviz rendering ---
+    let currentLayout = "dot";
+
+    function renderGraph(graph) {
+      const container = document.getElementById("graph-container");
+      const colorFn = colorModes[currentColorMode];
+      const dot = graphToDot(graph, colorFn, currentLayout);
+      const svg = graphviz.layout(dot, "svg", currentLayout);
+      container.innerHTML = svg;
+
+      // Store intrinsic size, then let CSS handle display
+      const svgEl = container.querySelector("svg");
+      if (svgEl) {
+        const w = svgEl.getAttribute("width");
+        const h = svgEl.getAttribute("height");
+        svgEl.dataset.intrinsicWidth = parseFloat(w) || 0;
+        svgEl.dataset.intrinsicHeight = parseFloat(h) || 0;
+        svgEl.style.width = (parseFloat(w) || 800) + "px";
+        svgEl.style.height = (parseFloat(h) || 600) + "px";
+        svgEl.removeAttribute("width");
+        svgEl.removeAttribute("height");
+      }
+
+      initPanZoom(container);
+
+      // Build lookup: node title → SVG element
+      const nodesByTitle = new Map();
+      container.querySelectorAll(".node").forEach(el => {
+        const title = el.querySelector("title");
+        if (title) nodesByTitle.set(title.textContent.trim(), el);
+      });
+
+      // Build lookup: edge title → SVG element, and adjacency from graph data
+      const edgesByKey = new Map();
+      container.querySelectorAll(".edge").forEach(el => {
+        const title = el.querySelector("title");
+        if (title) edgesByKey.set(title.textContent.trim(), el);
+      });
+
+      function getConnectedIds(nodeId) {
+        const ids = new Set([nodeId]);
+        // Walk upstream (predecessors)
+        const upQueue = [nodeId];
+        while (upQueue.length) {
+          const cur = upQueue.shift();
+          for (const { from, to } of graph.edges) {
+            if (to === cur && !ids.has(from)) {
+              ids.add(from);
+              upQueue.push(from);
+            }
+          }
+        }
+        // Walk downstream (successors)
+        const downQueue = [nodeId];
+        while (downQueue.length) {
+          const cur = downQueue.shift();
+          for (const { from, to } of graph.edges) {
+            if (from === cur && !ids.has(to)) {
+              ids.add(to);
+              downQueue.push(to);
+            }
+          }
+        }
+        return ids;
+      }
+
+      function highlightNode(nodeId) {
+        const connectedIds = getConnectedIds(nodeId);
+
+        // Dim all
+        container.querySelectorAll(".node").forEach(el => el.style.opacity = "0.15");
+        container.querySelectorAll(".edge").forEach(el => el.style.opacity = "0.05");
+
+        // Highlight connected nodes
+        for (const id of connectedIds) {
+          const el = nodesByTitle.get(id);
+          if (el) el.style.opacity = "1";
+        }
+
+        // Highlight edges between connected nodes
+        for (const { from, to } of graph.edges) {
+          if (connectedIds.has(from) && connectedIds.has(to)) {
+            const key = `${from}->${to}`;
+            const el = edgesByKey.get(key);
+            if (el) {
+              el.style.opacity = "1";
+              // Color highlighted edges
+              el.querySelectorAll("path, polygon").forEach(p => {
+                p.setAttribute("stroke", "#2563eb");
+              });
+              el.querySelectorAll("polygon").forEach(p => {
+                p.setAttribute("fill", "#2563eb");
+              });
+            }
+          }
+        }
+      }
+
+      function clearHighlight() {
+        container.querySelectorAll(".node").forEach(n => n.style.opacity = "");
+        container.querySelectorAll(".edge").forEach(el => {
+          el.style.opacity = "";
+          el.querySelectorAll("path, polygon").forEach(p => {
+            p.setAttribute("stroke", "#6e7781");
+          });
+          el.querySelectorAll("polygon").forEach(p => {
+            p.setAttribute("fill", "#6e7781");
+          });
         });
       }
 
-      cy = cytoscape({
-        container: document.getElementById("graph-container"),
-        elements,
-        style: [
-          {
-            selector: "node",
-            style: {
-              label: "data(label)",
-              "text-valign": "center",
-              "text-halign": "center",
-              "font-size": "11px",
-              "font-family": "system-ui, -apple-system, sans-serif",
-              "text-wrap": "wrap",
-              "text-max-width": "140px",
-              shape: "roundrectangle",
-              width: "label",
-              height: "label",
-              padding: "8px",
-              "min-width": "80px",
-              "min-height": "30px",
-              "background-color": "data(color)",
-              "background-opacity": 0.12,
-              "border-color": "data(borderColor)",
-              "border-width": "data(borderWidth)",
-              color: "#1a1a1a",
-            },
-          },
-          {
-            selector: "node[depth > 1]",
-            style: {
-              "font-size": "10px",
-              opacity: 0.8,
-            },
-          },
-          {
-            selector: "node[depth > 2]",
-            style: {
-              "font-size": "9px",
-              opacity: 0.6,
-            },
-          },
-          {
-            selector: "node:selected",
-            style: {
-              "background-opacity": 0.3,
-              "border-width": 3,
-              "border-color": "#2563eb",
-              opacity: 1,
-            },
-          },
-          {
-            selector: "edge",
-            style: {
-              width: 1.5,
-              "line-color": "#6e7781",
-              "target-arrow-color": "#6e7781",
-              "target-arrow-shape": "triangle",
-              "arrow-scale": 0.7,
-              "curve-style": "bezier",
-              opacity: 0.5,
-              "line-cap": "round",
-            },
-          },
-          {
-            selector: "edge.highlighted",
-            style: {
-              "line-color": "#2563eb",
-              "target-arrow-color": "#2563eb",
-              width: 2,
-              opacity: 1,
-            },
-          },
-          {
-            selector: "node.dimmed",
-            style: { opacity: 0.15 },
-          },
-          {
-            selector: "edge.dimmed",
-            style: { opacity: 0.05 },
-          },
-        ],
-        layout: layouts[currentLayout],
-        minZoom: 0.1,
-        maxZoom: 3,
-        wheelSensitivity: 0.3,
-        textureOnViewport: true,
-        hideEdgesOnViewport: true,
-      });
-
-      // Click node → show sidebar + highlight connections
-      cy.on("tap", "node", e => {
-        const nodeId = e.target.id();
-        highlightConnections(e.target);
-        showModule(nodeId);
+      // Click node → highlight + show module
+      container.querySelectorAll(".node").forEach(nodeEl => {
+        nodeEl.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const title = nodeEl.querySelector("title");
+          if (title) {
+            const nodeId = title.textContent.trim();
+            highlightNode(nodeId);
+            showModule(nodeId);
+          }
+        });
       });
 
       // Click background → clear highlight
-      cy.on("tap", e => {
-        if (e.target === cy) {
-          cy.elements().removeClass("dimmed highlighted");
-          cy.edges().removeClass("highlighted");
-        }
+      container.addEventListener("click", (e) => {
+        if (!e.target.closest(".node")) clearHighlight();
       });
     }
 
     // --- Zoom controls ---
-    document.getElementById("zoom-in").addEventListener("click", () => { if (cy) cy.zoom({ level: cy.zoom() * 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
-    document.getElementById("zoom-out").addEventListener("click", () => { if (cy) cy.zoom({ level: cy.zoom() / 1.3, renderedPosition: { x: cy.width() / 2, y: cy.height() / 2 } }); });
-    document.getElementById("zoom-fit").addEventListener("click", () => { if (cy) cy.fit(undefined, 30); });
-    document.getElementById("zoom-reset").addEventListener("click", () => { if (cy) { cy.zoom(1); cy.center(); } });
-    const layouts = {
-      elk: { name: "elk", elkConstructor: window.ELK, elk: { algorithm: "layered", "elk.direction": "DOWN", "elk.spacing.nodeNode": "50", "elk.layered.spacing.nodeNodeBetweenLayers": "120" }, fit: true, padding: 30 },
-      fcose: { name: "fcose", quality: "proof", randomize: true, seed: 42, nodeRepulsion: 15000, idealEdgeLength: 200, edgeElasticity: 0.3, nestingFactor: 0.1, gravity: 0.15, numIter: 5000, animate: false, fit: true, padding: 30 },
-    };
-    let currentLayout = "elk";
+    document.getElementById("zoom-in").addEventListener("click", () => {
+      svgState.scale *= 1.3;
+      const container = document.getElementById("graph-container");
+      const cw = container.clientWidth / 2, ch = container.clientHeight / 2;
+      svgState.panX = cw - (cw - svgState.panX) * 1.3;
+      svgState.panY = ch - (ch - svgState.panY) * 1.3;
+      const svg = container.querySelector("svg");
+      if (svg) svg.style.transform = `translate(${svgState.panX}px, ${svgState.panY}px) scale(${svgState.scale})`;
+    });
+    document.getElementById("zoom-out").addEventListener("click", () => {
+      svgState.scale /= 1.3;
+      const container = document.getElementById("graph-container");
+      const cw = container.clientWidth / 2, ch = container.clientHeight / 2;
+      svgState.panX = cw - (cw - svgState.panX) / 1.3;
+      svgState.panY = ch - (ch - svgState.panY) / 1.3;
+      const svg = container.querySelector("svg");
+      if (svg) svg.style.transform = `translate(${svgState.panX}px, ${svgState.panY}px) scale(${svgState.scale})`;
+    });
+    document.getElementById("zoom-fit").addEventListener("click", fitGraph);
+    document.getElementById("zoom-reset").addEventListener("click", () => {
+      const container = document.getElementById("graph-container");
+      const svg = container.querySelector("svg");
+      if (!svg) return;
+      const cw = container.clientWidth, ch = container.clientHeight;
+      const sw = parseFloat(svg.dataset.intrinsicWidth) || parseFloat(svg.style.width) || cw;
+      const sh = parseFloat(svg.dataset.intrinsicHeight) || parseFloat(svg.style.height) || ch;
+      svgState.scale = 1;
+      svgState.panX = (cw - sw) / 2;
+      svgState.panY = (ch - sh) / 2;
+      svg.style.transform = `translate(${svgState.panX}px, ${svgState.panY}px) scale(1)`;
+    });
 
     document.getElementById("layout-select").addEventListener("change", (e) => {
-      if (!cy) return;
       currentLayout = e.target.value;
-      cy.layout(layouts[currentLayout]).run();
+      if (lastGraph) renderGraph(lastGraph);
     });
     document.getElementById("color-select").addEventListener("change", (e) => {
       currentColorMode = e.target.value;
-      recolorGraph();
+      if (lastGraph) renderGraph(lastGraph);
     });
-
-    function highlightConnections(node) {
-      cy.elements().addClass("dimmed");
-      // Get all connected upstream and downstream
-      const connected = node.predecessors().union(node.successors()).union(node);
-      connected.removeClass("dimmed");
-      connected.edges().removeClass("dimmed").addClass("highlighted");
-      node.removeClass("dimmed");
-    }
 
     // --- Stats ---
     function computeStats(graph) {
@@ -798,10 +908,6 @@
       tab.querySelectorAll(".license-packages li[data-pkg-id]").forEach(li => {
         li.addEventListener("click", () => {
           showModule(li.dataset.pkgId);
-          if (cy) {
-            const node = cy.getElementById(li.dataset.pkgId);
-            if (node.length) highlightConnections(node);
-          }
         });
       });
     }
@@ -889,7 +995,11 @@
       const url = document.getElementById("url-input").value.trim();
       if (url) {
         showStatus("Fetching pyproject.toml...");
-        const resp = await fetch(url);
+        // Convert GitHub blob URLs to raw URLs
+        const rawUrl = url
+          .replace(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/, "https://raw.githubusercontent.com/$1/$2/refs/heads/$3")
+          .replace(/^https:\/\/gitlab\.com\/([^/]+)\/([^/]+)\/-\/blob\/(.+)$/, "https://gitlab.com/$1/$2/-/raw/$3");
+        const resp = await fetch(rawUrl);
         if (!resp.ok) throw new Error(`Failed to fetch URL: ${resp.status}`);
         return await resp.text();
       }
@@ -906,12 +1016,11 @@
         const toml = await getTomlInput();
         const parsed = parseToml(toml);
 
-        const maxDepth = Math.max(1, Math.min(10, parseInt(document.getElementById("depth-input").value) || 2));
+        const maxDepth = Infinity;
         const graph = await buildGraph(parsed.dependencies, parsed.name, maxDepth, showStatus);
         lastGraph = graph;
 
         showStatus("Rendering graph...");
-        if (cy) cy.destroy();
         renderGraph(graph);
         document.getElementById("zoom-controls").classList.add("active");
 
