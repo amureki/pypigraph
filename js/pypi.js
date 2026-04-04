@@ -53,11 +53,15 @@ export async function fetchPackageInfo(name) {
         || "";
       if (license.length > 80) license = license.slice(0, 80) + "...";
 
+      const devStatusClassifier = (info.classifiers ?? []).find(c => c.startsWith("Development Status"));
+      const devStatus = devStatusClassifier ? devStatusClassifier.split(" :: ").pop() : "";
+
       return {
         name: info.name,
         version: info.version,
         summary: info.summary || "",
         license,
+        devStatus,
         size,
         releaseDate,
         projectUrls: info.project_urls || {},

@@ -193,6 +193,7 @@ export function showModule(nodeId, graph) {
     node.releaseDate ? detailRow("Released", escapeHtml(node.releaseDate)) : "",
     detailRow("Summary", escapeHtml(node.summary || "-")),
     detailRow("License", escapeHtml(node.license || "Unknown"), classifyLicense(node.license)),
+    node.devStatus ? detailRow("Status", escapeHtml(node.devStatus)) : "",
     detailRow("Size", formatSize(node.size)),
   ];
   if (node.requiresPython) {
