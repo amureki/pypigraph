@@ -1,4 +1,4 @@
-import { formatSize, isDarkMode, escapeDot } from "./utils.js";
+import { formatSize, isDarkMode, escapeDot, escapeHtml } from "./utils.js";
 import { initPanZoom, svgState } from "./pan-zoom.js";
 
 // --- Coloring ---
@@ -46,6 +46,63 @@ export function getColorFn(mode, maxSize = 0) {
   return fns[mode] || colorByDepth;
 }
 
+const GRAPH_FONT = "Arial";
+
+function wrapLabelText(text, maxLength) {
+  const tokens = String(text).split(/([._-])/);
+  const lines = [];
+  let line = "";
+
+  for (let token of tokens) {
+    if (!token) continue;
+    if (line && line.length + token.length > maxLength) {
+      lines.push(line);
+      line = "";
+    }
+    while (token.length > maxLength) {
+      if (line) {
+        lines.push(line);
+        line = "";
+      }
+      lines.push(token.slice(0, maxLength));
+      token = token.slice(maxLength);
+    }
+    line += token;
+  }
+
+  if (line) lines.push(line);
+  return lines;
+}
+
+function labelRows(text, pointSize, color, { bold = false, maxLength = 22 } = {}) {
+  const tagOpen = bold ? "<B>" : "";
+  const tagClose = bold ? "</B>" : "";
+  return wrapLabelText(text, maxLength).map(line =>
+    `<TR><TD ALIGN="CENTER"><FONT FACE="${GRAPH_FONT}" POINT-SIZE="${pointSize}" COLOR="${color}">${tagOpen}${escapeHtml(line)}${tagClose}</FONT></TD></TR>`
+  );
+}
+
+function nodeLabel(node, fontColor, mutedColor) {
+  const versionLabel = node.pinnedBehind ? node.specifier : (node.version || "");
+  const titleSize = node.depth === 0 ? 12 : node.depth > 2 ? 9 : node.depth > 1 ? 10 : 11;
+  const versionSize = Math.max(titleSize - 1, 8);
+  const metaSize = Math.max(titleSize - 2, 8);
+  const rows = [
+    ...labelRows(node.name, titleSize, fontColor, { bold: true, maxLength: 22 }),
+  ];
+
+  if (versionLabel) {
+    rows.push(...labelRows(versionLabel, versionSize, mutedColor, { maxLength: 24 }));
+  }
+
+  const meta = [node.releaseDate, node.size ? formatSize(node.size) : ""].filter(Boolean).join("  |  ");
+  if (meta) {
+    rows.push(...labelRows(meta, metaSize, mutedColor, { maxLength: 26 }));
+  }
+
+  return `<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="0">${rows.join("")}</TABLE>`;
+}
+
 // --- DOT generation ---
 export function graphToDot(graph, colorFn, engine) {
   const dependedBy = new Map();
@@ -54,6 +111,7 @@ export function graphToDot(graph, colorFn, engine) {
   }
 
   const fontColor = isDarkMode() ? "#e0e0e0" : "#1a1a1a";
+  const mutedFontColor = isDarkMode() ? "#a3a3a3" : "#666666";
   const isDot = engine === "dot";
   const lines = [
     `digraph G {`,
@@ -65,27 +123,22 @@ export function graphToDot(graph, colorFn, engine) {
     isDot ? `  newrank=true;` : "",
     !isDot ? `  overlap=prism;` : "",
     !isDot ? `  sep="+10";` : "",
-    `  node [shape=box, style="rounded,filled", fontname="DM Sans, system-ui, sans-serif", fontsize=11, fontcolor="${fontColor}", margin="0.15,0.08"];`,
+    `  node [shape=box, style="filled", fontname="${GRAPH_FONT}", fontsize=11, fontcolor="${fontColor}", margin="0.14,0.1"];`,
     `  edge [color="${isDarkMode() ? '#555' : '#6e7781'}", arrowsize=0.7, arrowhead=vee];`,
   ].filter(Boolean);
 
   for (const [id, node] of graph.nodes) {
     if (!node) continue;
     const count = dependedBy.get(id) || 0;
-    const dateLabel = node.releaseDate ? `\n${node.releaseDate}` : "";
-    const sizeLabel = node.size ? `\n${formatSize(node.size)}` : "";
-    const versionLabel = node.pinnedBehind ? node.specifier : (node.version || "");
-    const nameVersion = versionLabel ? `${node.name}@${versionLabel}` : node.name;
-    const labelParts = `${escapeDot(nameVersion)}${dateLabel}${sizeLabel}`;
+    const label = nodeLabel(node, fontColor, mutedFontColor);
     const color = colorFn(node);
     const penwidth = node.depth === 0 ? 3 : count > 3 ? 2.5 : 1.5;
-    const fontsize = node.depth === 0 ? 12 : node.depth > 2 ? 9 : node.depth > 1 ? 10 : 11;
-    const style = node.error ? "rounded,filled,dashed" : "rounded,filled";
+    const style = node.error ? "filled,dashed" : "filled";
     const fillOpacity = isDarkMode() ? "40" : "20";
     const tooltipParts = [node.summary || node.name, count > 0 ? `Used by ${count} package${count > 1 ? "s" : ""}` : ""].filter(Boolean).join(" \u00B7 ");
     const tooltip = escapeDot(tooltipParts);
 
-    lines.push(`  "${escapeDot(id)}" [label="${labelParts}", fillcolor="${color}${fillOpacity}", color="${node.error ? "#dc2626" : color}", penwidth=${penwidth}, fontsize=${fontsize}, style="${style}", tooltip="${tooltip}", id="${escapeDot(id)}"];`);
+    lines.push(`  "${escapeDot(id)}" [label=<${label}>, fillcolor="${color}${fillOpacity}", color="${node.error ? "#dc2626" : color}", penwidth=${penwidth}, style="${style}", tooltip="${tooltip}", id="${escapeDot(id)}"];`);
   }
 
   for (const { from, to } of graph.edges) {
