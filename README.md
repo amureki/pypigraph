@@ -4,14 +4,21 @@ Visualize Python package dependency graphs.
 
 **[pypigraph.org](https://pypigraph.org)**
 
+## What it is
+
+pypigraph is a quick way to see what a Python project or package depends on, including transitive dependencies. It helps with dependency exploration, package choice, rough license/freshness review, and sharing dependency graphs.
+
+It is a static browser app: it parses input locally, fetches package metadata directly from PyPI, and renders the graph in-browser with Graphviz WASM.
+
 ## Features
 
-- Paste a `pyproject.toml`, enter a URL, or type a package name
-- Interactive graph with pan, zoom, and search
-- Color by depth, freshness, license, or size
-- Package details: version, license, release date, size, dependencies
-- Graph stats: depth distribution, freshness breakdown, largest packages, license overview
-- Tree and radial layouts
-- Light/dark theme
-- Shareable URLs
-- Works entirely in the browser -- no backend
+- Build a graph from a `pyproject.toml`, URL, or package name
+- Explore direct and transitive dependencies interactively
+- Inspect package metadata: version, license, release date, size, and dependencies
+- Highlight stale releases, unknown licenses, large packages, and pinned-behind dependencies
+- View summaries by depth, freshness, package size, and license
+- Share graphs with URL parameters
+
+## Limitations
+
+pypigraph does not read lockfiles or run a full resolver. It uses the latest PyPI metadata, so the graph may differ from the exact packages installed by `uv`, `pip`, Poetry, or a lockfile with pinned versions, extras, markers, platforms, or alternate indexes.
